@@ -1,4 +1,4 @@
-# run_mac_ndi_to_obs.py
+# run_mac_ndi_to_obs.py <- deprecated
 import argparse
 import time
 
