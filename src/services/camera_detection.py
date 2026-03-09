@@ -1,18 +1,33 @@
+# camera_detection.py
 import platform
 import re
 import shutil
 import subprocess
+import cv2
 
 
 def detect_cameras_for_current_os():
     current_os = platform.system()
 
     if current_os == "Darwin":
-        return detect_cameras_macos()
-    if current_os == "Windows":
-        return detect_cameras_windows()
+        named_cameras = detect_cameras_macos()
+    elif current_os == "Windows":
+        named_cameras = detect_cameras_windows()
+    else:
+        return []
 
-    return []
+    preview_indices = detect_opencv_camera_indices()
+
+    cameras = []
+    for i, cam in enumerate(named_cameras):
+        preview_index = preview_indices[i] if i < len(preview_indices) else cam["id"]
+        cameras.append({
+            "id": cam["id"],
+            "name": cam["name"],
+            "preview_index": preview_index,
+        })
+
+    return cameras
 
 
 def detect_cameras_macos():
@@ -43,6 +58,20 @@ def detect_cameras_windows():
 
     output = (result.stdout or "") + "\n" + (result.stderr or "")
     return _parse_windows_dshow_devices(output)
+
+
+def detect_opencv_camera_indices(max_tested=10):
+    indices = []
+
+    for index in range(max_tested):
+        cap = cv2.VideoCapture(index)
+        if cap is not None and cap.isOpened():
+            ok, _ = cap.read()
+            cap.release()
+            if ok:
+                indices.append(index)
+
+    return indices
 
 
 def _find_ffmpeg():
@@ -97,13 +126,10 @@ def _parse_windows_dshow_devices(output: str):
         if not in_video_section:
             continue
 
-        # Typical line:
-        # [dshow @ ...]  "Integrated Camera"
         match = re.search(r'"([^"]+)"', line)
         if match:
             cam_name = match.group(1).strip()
 
-            # Skip alternative device name lines
             if cam_name.startswith("@device_"):
                 continue
 
@@ -117,19 +143,18 @@ def _parse_windows_dshow_devices(output: str):
 def _is_duplicate_name(devices, name):
     return any(device["name"] == name for device in devices)
 
+
 if __name__ == "__main__":
     try:
         cameras = detect_cameras_for_current_os()
 
-        print("\n=== Camera Detection ===")
-        print(f"Platform: {platform.system()}")
-
         if not cameras:
             print("No cameras detected.")
         else:
-            for i, cam in enumerate(cameras, start=1):
-                print(f"{i}. ID={cam['id']}  Name={cam['name']}")
-        print("========================\n")
-
+            print("Detected cameras:")
+            for cam in cameras:
+                print(
+                    f'  ID: {cam["id"]} | Preview Index: {cam["preview_index"]} | Name: {cam["name"]}'
+                )
     except Exception as e:
         print(f"Camera detection failed: {e}")

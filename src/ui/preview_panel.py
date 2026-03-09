@@ -1,3 +1,4 @@
+# preview_panel.py
 import tkinter as tk
 from tkinter import ttk
 
@@ -31,24 +32,25 @@ def build_preview_panel(app, parent):
 
     center = tk.Frame(preview_shell, bg=app.colors["preview"])
     center.grid(row=0, column=0, sticky="nsew")
+    center.grid_propagate(False)
 
-    tk.Label(
+    app.preview_canvas = tk.Canvas(
+        center,
+        bg=app.colors["preview"],
+        highlightthickness=0,
+        bd=0,
+    )
+    app.preview_canvas.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+    app.preview_text_label = tk.Label(
         center,
         textvariable=app.preview_text_var,
         bg=app.colors["preview"],
         fg=app.colors["text"],
         font=("Helvetica", 20, "bold"),
-    ).pack(pady=(180, 8))
-
-    tk.Label(
-        center,
-        text="This large center panel is reserved for the end-user preview experience. Next, we will wire the real live camera/composited output here or keep it synced with the backend preview window.",
-        bg=app.colors["preview"],
-        fg=app.colors["muted"],
-        font=("Helvetica", 11),
-        wraplength=540,
         justify="center",
-    ).pack()
+    )
+    app.preview_text_label.place(relx=0.5, rely=0.5, anchor="center")
 
     app.swap_button = tk.Button(
         preview_shell,

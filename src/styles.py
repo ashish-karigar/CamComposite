@@ -1,3 +1,4 @@
+# styles.py
 from tkinter import ttk
 
 

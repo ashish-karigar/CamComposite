@@ -1,3 +1,4 @@
+# controls_panel.py
 from tkinter import ttk
 
 

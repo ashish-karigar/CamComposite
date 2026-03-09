@@ -1,3 +1,4 @@
+# constants.py
 COLORS = {
     "bg": "#0f1115",
     "panel": "#171a21",

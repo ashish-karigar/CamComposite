@@ -11,7 +11,7 @@ OBS_PORT = 4455
 OBS_PASSWORD = "mylens123"
 SCENE_NAME = "CamComposite"
 
-NDI_SCRIPT = "../helpers/run_mac_ndi_to_obs.py"
+NDI_SCRIPT = "run_mac_ndi_to_obs_prototype.py"
 
 
 def launch_obs():

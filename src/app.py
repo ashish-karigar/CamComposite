@@ -1,5 +1,5 @@
+# app.py
 import platform
-import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -13,6 +13,10 @@ from ui import (
     build_footer,
 )
 
+from services import detect_cameras_for_current_os, PreviewService
+from src.utils.obs_mac_controller import MacOBSController
+from src.utils.ndi_frame_sender import NDIFrameSender
+
 
 class CamCompositeApp(tk.Tk):
     def __init__(self):
@@ -25,7 +29,6 @@ class CamCompositeApp(tk.Tk):
         self.colors = COLORS
         self.current_os = platform.system()
         self.pipeline_running = False
-        self.worker_thread = None
 
         self.selected_cameras = []
         self.camera_check_vars = {}
@@ -33,6 +36,15 @@ class CamCompositeApp(tk.Tk):
         self.detected_cameras = []
         self.layout_disabled = False
         self.layout_tiles = {}
+
+        self.obs_controller = None
+
+        if platform.system() == "Darwin":
+            self.obs_controller = MacOBSController(
+                scene_name="CamComposite",
+                port=4455,
+                password="mylens123",
+            )
 
         self.mode_var = tk.StringVar(value="single")
         self.swapped_var = tk.BooleanVar(value=False)
@@ -47,6 +59,20 @@ class CamCompositeApp(tk.Tk):
         self._build_layout()
         self._set_platform_defaults()
         self.after(200, self.detect_cameras)
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.preview_service = PreviewService(self)
+        self.ndi_sender = NDIFrameSender()
+        self.preview_service.set_frame_forwarder(self.ndi_sender)
+
+    def _selected_camera_objects(self):
+        selected = []
+        for selected_id in self.selected_cameras:
+            for cam in self.detected_cameras:
+                if str(cam["id"]) == str(selected_id):
+                    selected.append(cam)
+                    break
+        return selected
 
     def _build_layout(self):
         root = ttk.Frame(self, style="App.TFrame", padding=22)
@@ -147,6 +173,7 @@ class CamCompositeApp(tk.Tk):
             self.mode_var.set("single")
             self._set_layout_state(disable=True)
             self.preview_text_var.set("Single camera detected and selected automatically")
+            self.after(100, self.refresh_preview)
         else:
             first_id = str(self.detected_cameras[0]["id"])
             self.camera_check_vars[first_id].set(True)
@@ -154,6 +181,7 @@ class CamCompositeApp(tk.Tk):
             self.mode_var.set("single")
             self._set_layout_state(disable=False)
             self.preview_text_var.set(f"Selected: {self._camera_name_from_id(first_id)}")
+            self.after(100, self.refresh_preview)
 
     def _on_camera_checkbox_toggle(self, cam_id):
         selected = [cid for cid, var in self.camera_check_vars.items() if var.get()]
@@ -184,11 +212,32 @@ class CamCompositeApp(tk.Tk):
         else:
             self.preview_text_var.set("No cameras selected")
 
+        self.refresh_preview()
+
     def _camera_name_from_id(self, cam_id):
         for cam in self.detected_cameras:
             if str(cam["id"]) == str(cam_id):
                 return cam["name"]
         return f"Camera {cam_id}"
+
+    def _on_close(self):
+        try:
+            if self.obs_controller is not None:
+                self.obs_controller.stop()
+        except Exception as e:
+            print(f"OBS close warning: {e}")
+
+        try:
+            self.preview_service.stop()
+        except Exception as e:
+            print(f"Preview close warning: {e}")
+
+        try:
+            self.ndi_sender.stop()
+        except Exception as e:
+            print(f"NDI close warning: {e}")
+
+        self.destroy()
 
     def _refresh_layout_tiles(self):
         if not hasattr(self, "layout_tiles"):
@@ -227,6 +276,7 @@ class CamCompositeApp(tk.Tk):
         self._refresh_layout_tiles()
         self.preview_text_var.set(f"{self._layout_label(mode_key)} selected")
         self.clear_footer_message()
+        self.refresh_preview()
 
     def _set_layout_state(self, disable=False):
         self.layout_disabled = disable
@@ -247,11 +297,14 @@ class CamCompositeApp(tk.Tk):
 
     def swap_cameras(self):
         if len(self.selected_cameras) < 2:
+            self.set_footer_message("Select 2 cameras to swap.", is_error=True)
             return
 
         self.selected_cameras[0], self.selected_cameras[1] = self.selected_cameras[1], self.selected_cameras[0]
         self.swapped_var.set(not self.swapped_var.get())
         self.preview_text_var.set("Camera feeds swapped")
+        self.clear_footer_message()
+        self.refresh_preview()
 
         if self.pipeline_running:
             mode = self.mode_var.get()
@@ -273,39 +326,123 @@ class CamCompositeApp(tk.Tk):
         if self.mode_var.get() != "single" and len(self.selected_cameras) < 2:
             self.set_footer_message("Please select 2 cameras for dual-camera layouts.", is_error=True)
             return
-        self.clear_footer_message()
-        self.pipeline_running = True
-        self.status_var.set("Starting...")
-        self.preview_text_var.set("Starting camera preview...")
-        self.worker_thread = threading.Thread(target=self._mock_pipeline_start, daemon=True)
-        self.worker_thread.start()
 
-    def _mock_pipeline_start(self):
-        mode = self.mode_var.get().strip()
-        cam_a = self.selected_cameras[0] if len(self.selected_cameras) >= 1 else ""
-        cam_b = self.selected_cameras[1] if len(self.selected_cameras) >= 2 else ""
-        preview = self.preview_var.get()
-        hide_obs = self.auto_hide_obs_var.get()
+        try:
+            self.clear_footer_message()
 
-        self.after(
-            0,
-            lambda: self.status_var.set(
+            self.ndi_sender.start()
+
+            # Always run the capture/compositor loop so OBS gets frames,
+            # even when local preview is disabled.
+            self.preview_service.start(
+                self.selected_cameras,
+                self.mode_var.get(),
+                render_local=self.preview_var.get(),
+            )
+
+            if self.obs_controller is not None:
+                self.obs_controller.start()
+                if self.auto_hide_obs_var.get():
+                    self.after(1000, self.obs_controller.hide_obs)
+
+            self.pipeline_running = True
+
+            mode = self.mode_var.get().strip()
+            cam_a = self.selected_cameras[0] if len(self.selected_cameras) >= 1 else ""
+            cam_b = self.selected_cameras[1] if len(self.selected_cameras) >= 2 else ""
+
+            self.status_var.set(
                 f"Running: {self._camera_name_from_id(cam_a)}"
                 + (f", {self._camera_name_from_id(cam_b)}" if cam_b else "")
                 + f", {self._layout_label(mode)}"
-            ),
-        )
-        self.after(0, lambda: self.preview_text_var.set("Preview connected"))
-        _ = preview, hide_obs
+            )
+            self.preview_text_var.set("Preview connected" if self.preview_var.get() else "Local preview disabled")
+
+        except Exception as e:
+            self.pipeline_running = False
+            try:
+                self.preview_service.stop()
+            except Exception:
+                pass
+            try:
+                self.ndi_sender.stop()
+            except Exception:
+                pass
+            try:
+                if self.obs_controller is not None:
+                    self.obs_controller.stop()
+            except Exception:
+                pass
+            self.set_footer_message(str(e), is_error=True)
+            self.status_var.set("Stopped")
+            self.preview_text_var.set("Preview unavailable")
+
+    def refresh_preview(self):
+        if not hasattr(self, "preview_service"):
+            return
+
+        if not self.selected_cameras:
+            self.preview_text_var.set("No cameras selected")
+            return
+
+        try:
+            # If pipeline is running, keep the sender/compositor in sync with current UI state.
+            if self.pipeline_running:
+                self.preview_service.start(
+                    self.selected_cameras,
+                    self.mode_var.get(),
+                    render_local=self.preview_var.get(),
+                )
+            else:
+                # Before pipeline start, this is just local preview behavior.
+                self.preview_service.start(
+                    self.selected_cameras,
+                    self.mode_var.get(),
+                    render_local=True,
+                )
+
+            self.clear_footer_message()
+        except Exception as e:
+            self.preview_service.stop()
+            self.preview_text_var.set("Preview unavailable")
+            self.set_footer_message(str(e), is_error=True)
+
+    # def _mock_pipeline_start(self):
+    #     mode = self.mode_var.get().strip()
+    #     cam_a = self.selected_cameras[0] if len(self.selected_cameras) >= 1 else ""
+    #     cam_b = self.selected_cameras[1] if len(self.selected_cameras) >= 2 else ""
+    #     preview = self.preview_var.get()
+    #     hide_obs = self.auto_hide_obs_var.get()
+    #
+    #     self.after(
+    #         0,
+    #         lambda: self.status_var.set(
+    #             f"Running: {self._camera_name_from_id(cam_a)}"
+    #             + (f", {self._camera_name_from_id(cam_b)}" if cam_b else "")
+    #             + f", {self._layout_label(mode)}"
+    #         ),
+    #     )
+    #     self.after(0, lambda: self.preview_text_var.set("Preview connected"))
+    #     _ = preview, hide_obs
 
     def stop_pipeline(self):
         if not self.pipeline_running:
             self.set_footer_message("Pipeline is not running.", is_error=True)
             return
 
+        try:
+            if self.obs_controller is not None:
+                self.obs_controller.stop()
+        except Exception as e:
+            print(f"OBS stop warning: {e}")
+
+        self.preview_service.stop()
+        self.ndi_sender.stop()
+
         self.pipeline_running = False
         self.status_var.set("Stopped")
         self.preview_text_var.set(f"{self._layout_label(self.mode_var.get())} preview will appear here")
+        self.clear_footer_message()
 
     def detect_cameras(self):
         try:

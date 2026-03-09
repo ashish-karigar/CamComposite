@@ -1,3 +1,4 @@
+# mac_first_run_check.py
 import os
 import socket
 import subprocess
