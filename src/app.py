@@ -15,7 +15,7 @@ from ui import (
 from services import detect_cameras_for_current_os, PreviewService
 # from src.utils.obs_mac_controller import MacOBSController
 # from src.utils.ndi_frame_sender import NDIFrameSender
-from src.utils.unity_frame_sender import UnityFrameSender
+# from src.utils.unity_frame_sender import UnityFrameSender
 
 
 class CamCompositeApp(tk.Tk):
@@ -69,6 +69,7 @@ class CamCompositeApp(tk.Tk):
             from src.utils.ndi_frame_sender import NDIFrameSender
             self.frame_forwarder = NDIFrameSender()
         elif self.current_os == "Windows":
+            from src.utils.unity_frame_sender import UnityFrameSender
             self.frame_forwarder = UnityFrameSender()
 
         self.preview_service.set_frame_forwarder(self.frame_forwarder)
