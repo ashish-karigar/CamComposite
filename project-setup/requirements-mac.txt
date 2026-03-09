@@ -4,3 +4,4 @@ ndi-python
 numpy
 obsws-python
 pillow
+ffmpeg

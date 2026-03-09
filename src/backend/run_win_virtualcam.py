@@ -5,7 +5,7 @@ import pyvirtualcam
 from pyvirtualcam import PixelFormat
 
 from src.prototypes.compositor_core import run_compositor
-from helpers.win_unitycapture_installer import ensure_unitycapture_installed
+from src.helpers.win_unitycapture_installer import ensure_unitycapture_installed
 
 
 def _project_root() -> Path:

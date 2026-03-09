@@ -29,7 +29,6 @@ def detect_cameras_for_current_os():
 
     return cameras
 
-
 def detect_cameras_macos():
     ffmpeg_path = _find_ffmpeg()
     if not ffmpeg_path:
@@ -44,27 +43,43 @@ def detect_cameras_macos():
     output = (result.stdout or "") + "\n" + (result.stderr or "")
     return _parse_macos_avfoundation_devices(output)
 
+# def detect_cameras_windows():
+#     ffmpeg_path = _find_ffmpeg()
+#     if not ffmpeg_path:
+#         raise RuntimeError("FFmpeg not found. Please install FFmpeg and make sure it is in PATH.")
+#
+#     result = subprocess.run(
+#         [ffmpeg_path, "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
+#         capture_output=True,
+#         text=True,
+#     )
+#
+#     output = (result.stdout or "") + "\n" + (result.stderr or "")
+#     return _parse_windows_dshow_devices(output)
 
 def detect_cameras_windows():
-    ffmpeg_path = _find_ffmpeg()
-    if not ffmpeg_path:
-        raise RuntimeError("FFmpeg not found. Please install FFmpeg and make sure it is in PATH.")
+    preview_indices = detect_opencv_camera_indices()
 
-    result = subprocess.run(
-        [ffmpeg_path, "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
-        capture_output=True,
-        text=True,
-    )
+    cameras = []
+    for idx in preview_indices:
+        cameras.append({
+            "id": idx,
+            "name": f"Camera {idx}",
+        })
 
-    output = (result.stdout or "") + "\n" + (result.stderr or "")
-    return _parse_windows_dshow_devices(output)
-
+    return cameras
 
 def detect_opencv_camera_indices(max_tested=10):
     indices = []
 
     for index in range(max_tested):
-        cap = cv2.VideoCapture(index)
+        if platform.system() == "Windows":
+            cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        elif platform.system() == "Darwin":
+            cap = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
+        else:
+            cap = cv2.VideoCapture(index)
+
         if cap is not None and cap.isOpened():
             ok, _ = cap.read()
             cap.release()
@@ -73,10 +88,21 @@ def detect_opencv_camera_indices(max_tested=10):
 
     return indices
 
+# def detect_opencv_camera_indices(max_tested=10):
+#     indices = []
+#
+#     for index in range(max_tested):
+#         cap = cv2.VideoCapture(index)
+#         if cap is not None and cap.isOpened():
+#             ok, _ = cap.read()
+#             cap.release()
+#             if ok:
+#                 indices.append(index)
+#
+#     return indices
 
 def _find_ffmpeg():
     return shutil.which("ffmpeg")
-
 
 def _parse_macos_avfoundation_devices(output: str):
     cameras = []
@@ -105,7 +131,6 @@ def _parse_macos_avfoundation_devices(output: str):
                 cameras.append({"id": cam_id, "name": cam_name})
 
     return cameras
-
 
 def _parse_windows_dshow_devices(output: str):
     cameras = []
@@ -138,7 +163,6 @@ def _parse_windows_dshow_devices(output: str):
                 next_id += 1
 
     return cameras
-
 
 def _is_duplicate_name(devices, name):
     return any(device["name"] == name for device in devices)

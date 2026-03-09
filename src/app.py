@@ -5,7 +5,6 @@ from tkinter import ttk, messagebox
 
 from constants import COLORS, WINDOW
 from styles import configure_styles
-from services import detect_cameras_for_current_os
 from ui import (
     build_header,
     build_controls_panel,
@@ -14,8 +13,9 @@ from ui import (
 )
 
 from services import detect_cameras_for_current_os, PreviewService
-from src.utils.obs_mac_controller import MacOBSController
-from src.utils.ndi_frame_sender import NDIFrameSender
+# from src.utils.obs_mac_controller import MacOBSController
+# from src.utils.ndi_frame_sender import NDIFrameSender
+from src.utils.unity_frame_sender import UnityFrameSender
 
 
 class CamCompositeApp(tk.Tk):
@@ -40,6 +40,7 @@ class CamCompositeApp(tk.Tk):
         self.obs_controller = None
 
         if platform.system() == "Darwin":
+            from src.utils.obs_mac_controller import MacOBSController
             self.obs_controller = MacOBSController(
                 scene_name="CamComposite",
                 port=4455,
@@ -62,8 +63,15 @@ class CamCompositeApp(tk.Tk):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.preview_service = PreviewService(self)
-        self.ndi_sender = NDIFrameSender()
-        self.preview_service.set_frame_forwarder(self.ndi_sender)
+        self.frame_forwarder = None
+
+        if self.current_os == "Darwin":
+            from src.utils.ndi_frame_sender import NDIFrameSender
+            self.frame_forwarder = NDIFrameSender()
+        elif self.current_os == "Windows":
+            self.frame_forwarder = UnityFrameSender()
+
+        self.preview_service.set_frame_forwarder(self.frame_forwarder)
 
     def _selected_camera_objects(self):
         selected = []
@@ -233,9 +241,10 @@ class CamCompositeApp(tk.Tk):
             print(f"Preview close warning: {e}")
 
         try:
-            self.ndi_sender.stop()
+            if self.frame_forwarder is not None:
+                self.frame_forwarder.stop()
         except Exception as e:
-            print(f"NDI close warning: {e}")
+            print(f"Frame forwarder close warning: {e}")
 
         self.destroy()
 
@@ -330,7 +339,8 @@ class CamCompositeApp(tk.Tk):
         try:
             self.clear_footer_message()
 
-            self.ndi_sender.start()
+            if self.frame_forwarder is not None:
+                self.frame_forwarder.start()
 
             # Always run the capture/compositor loop so OBS gets frames,
             # even when local preview is disabled.
@@ -365,7 +375,8 @@ class CamCompositeApp(tk.Tk):
             except Exception:
                 pass
             try:
-                self.ndi_sender.stop()
+                if self.frame_forwarder is not None:
+                    self.frame_forwarder.stop()
             except Exception:
                 pass
             try:
@@ -437,7 +448,9 @@ class CamCompositeApp(tk.Tk):
             print(f"OBS stop warning: {e}")
 
         self.preview_service.stop()
-        self.ndi_sender.stop()
+
+        if self.frame_forwarder is not None:
+            self.frame_forwarder.stop()
 
         self.pipeline_running = False
         self.status_var.set("Stopped")

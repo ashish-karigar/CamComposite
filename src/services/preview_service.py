@@ -31,6 +31,8 @@ class PreviewService:
 
         if self.app.current_os == "Darwin":
             self.capture_a = cv2.VideoCapture(int(cam_a["preview_index"]), cv2.CAP_AVFOUNDATION)
+        elif self.app.current_os == "Windows":
+            self.capture_a = cv2.VideoCapture(int(cam_a["preview_index"]), cv2.CAP_DSHOW)
         else:
             self.capture_a = cv2.VideoCapture(int(cam_a["preview_index"]))
         if not self.capture_a.isOpened():
@@ -45,6 +47,8 @@ class PreviewService:
 
             if self.app.current_os == "Darwin":
                 self.capture_b = cv2.VideoCapture(int(cam_b["preview_index"]), cv2.CAP_AVFOUNDATION)
+            elif self.app.current_os == "Windows":
+                self.capture_b = cv2.VideoCapture(int(cam_b["preview_index"]), cv2.CAP_DSHOW)
             else:
                 self.capture_b = cv2.VideoCapture(int(cam_b["preview_index"]))
             if not self.capture_b.isOpened():
