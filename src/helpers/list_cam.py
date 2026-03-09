@@ -1,17 +1,31 @@
-import cv2
+from tkinter import messagebox
 
-def try_open(i):
-    cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)  # DirectShow on Windows
-    ok = cap.isOpened()
-    if ok:
-        ok2, frame = cap.read()
-        ok = ok2 and frame is not None
-    cap.release()
-    return ok
 
-found = []
-for i in range(0, 10):
-    if try_open(i):
-        found.append(i)
+def detect_cameras(self):
+    try:
+        if self.current_os == "Darwin":
+            cameras = self._detect_cameras_macos()
+        elif self.current_os == "Windows":
+            cameras = self._detect_cameras_windows()
+        else:
+            messagebox.showerror("Detect Cameras", f"Unsupported OS: {self.current_os}")
+            return
 
-print("Working camera indices:", found)
+        self.detected_cameras = cameras
+        self._populate_camera_selectors()
+
+        if not cameras:
+            self.setup_var.set("No cameras detected")
+            self.preview_text_var.set("No cameras found")
+            return
+
+        if len(cameras) == 1:
+            self.setup_var.set(f"1 camera detected: {cameras[0]['name']}")
+            self.preview_text_var.set("Single camera mode auto-selected")
+        else:
+            self.setup_var.set(f"{len(cameras)} cameras detected")
+            self.preview_text_var.set("Select up to 2 cameras")
+
+    except Exception as e:
+        messagebox.showerror("Detect Cameras", f"Camera detection failed:\n{e}")
+        self.setup_var.set("Camera detection failed")

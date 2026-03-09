@@ -1,14 +1,22 @@
 import cv2
 import time
 import numpy as np
+import platform
 
-def open_cam(src: int, width=1280, height=720, fps=30):
-    cap = cv2.VideoCapture(src)
+def open_cam(src: int, width=1920, height=1080, fps=30):
+    system = platform.system()
+
+    if system == "Windows":
+        cap = cv2.VideoCapture(src, cv2.CAP_DSHOW)
+    elif system == "Darwin":   # macOS
+        cap = cv2.VideoCapture(src, cv2.CAP_AVFOUNDATION)
+    else:
+        cap = cv2.VideoCapture(src)
+
     if not cap.isOpened():
         raise RuntimeError(f"Could not open camera index {src}")
 
-    # Best-effort settings (may be ignored by some cameras/drivers)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  width)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     cap.set(cv2.CAP_PROP_FPS, fps)
     return cap
