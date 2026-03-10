@@ -100,13 +100,13 @@ def _run_bat_as_admin(bat_path: Path, workdir: Path):
 def ensure_unitycapture_installed(project_root: Path) -> Path:
     """
     Ensures UnityCapture is installed/registered.
-    If missing, clones/downloads into <project_root>/packages/UnityCapture and runs installer as admin.
+    If missing, clones/downloads into <project_root>/packaging/win/UnityCapture and runs installer as admin.
     Returns the UnityCapture repo path.
     """
     if unitycapture_is_registered():
-        return project_root / "packages" / "UnityCapture"  # best-effort path; may not exist
+        return project_root / "packaging" / "win" / "UnityCapture"  # best-effort path; may not exist
 
-    utils_dir = project_root / "packages"
+    utils_dir = project_root / "packaging" / "win"
     repo_dir = _clone_or_download_unitycapture(utils_dir)
 
     install_bat = repo_dir / "Install" / "Install.bat"

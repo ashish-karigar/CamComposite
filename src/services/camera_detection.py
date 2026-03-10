@@ -102,7 +102,21 @@ def detect_opencv_camera_indices(max_tested=10):
 #     return indices
 
 def _find_ffmpeg():
-    return shutil.which("ffmpeg")
+    import os
+    import sys
+    from pathlib import Path
+
+    if getattr(sys, "frozen", False):
+        base_path = Path(sys._MEIPASS)
+    else:
+        base_path = Path(__file__).resolve().parents[2]
+
+    ffmpeg_path = base_path / "assets" / "bin" / "macos" / "ffmpeg"
+
+    if ffmpeg_path.exists():
+        return str(ffmpeg_path)
+
+    return None
 
 def _parse_macos_avfoundation_devices(output: str):
     cameras = []
@@ -169,6 +183,7 @@ def _is_duplicate_name(devices, name):
 
 
 if __name__ == "__main__":
+    print("ffmpeg path:", _find_ffmpeg())
     try:
         cameras = detect_cameras_for_current_os()
 

@@ -1,2 +1,22 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build output
+build/
+dist/
 .idea/
-#packages/
+
+# Packaging temp/generated
+packaging/mac/root/
+packaging/mac/expanded/
+packaging/mac/CamComposite-component.pkg
+packaging/mac/CamComposite.pkg
+
+# Optional: if you do NOT want local release files tracked
+# release/
