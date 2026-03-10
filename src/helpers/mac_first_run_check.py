@@ -1,191 +1,170 @@
-# mac_first_run_check.py
-import os
-import socket
+from pathlib import Path
+import shutil
 import subprocess
-from dataclasses import dataclass
-from typing import Optional, Dict, Any
-
-from obsws_python import ReqClient
+import platform
 
 
-OBS_APP_BUNDLE = "/Applications/OBS.app"
-OBS_EXECUTABLE = "/Applications/OBS.app/Contents/MacOS/OBS"
-OBS_PASSWORD = "mylens123"
+def _resource_path(filename: str):
+    import sys
 
-
-@dataclass
-class CheckResult:
-    ok: bool
-    status: str
-    detail: str = ""
-
-
-def check_obs_installed() -> CheckResult:
-    """
-    Simple file-system check for OBS installation.
-    """
-    if os.path.exists(OBS_APP_BUNDLE) and os.path.exists(OBS_EXECUTABLE):
-        return CheckResult(True, "installed", "OBS.app found in /Applications")
-    return CheckResult(False, "missing", "OBS.app was not found in /Applications")
-
-
-def check_port_open(host: str = "127.0.0.1", port: int = 4455, timeout: float = 1.0) -> bool:
-    """
-    Low-level socket probe. Useful before trying obs-websocket auth.
-    """
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
-def check_obs_websocket(port: int = 4455, password: Optional[str] = None) -> CheckResult:
-    """
-    Checks whether OBS websocket is enabled/reachable.
-
-    Cases:
-    - port closed -> websocket disabled / OBS not running
-    - port open + valid auth -> enabled and reachable
-    - port open + invalid password -> enabled, but auth failed
-    """
-    port_open = check_port_open(port=port)
-    if not port_open:
-        return CheckResult(
-            False,
-            "unreachable",
-            f"No server reachable on localhost:{port}. OBS may be closed or websocket may be disabled."
-        )
-
-    if password is None:
-        return CheckResult(
-            True,
-            "reachable",
-            f"Port {port} is open. OBS websocket appears reachable, but auth was not tested."
-        )
-
-    try:
-        client = ReqClient(host="localhost", port=port, password=password, timeout=3)
-        version_info = client.get_version()
-        return CheckResult(
-            True,
-            "enabled",
-            f"Connected successfully. OBS version: {version_info.obs_version}"
-        )
-    except Exception as e:
-        msg = str(e)
-
-        # If auth fails, the server is still there, which tells us websocket is enabled.
-        auth_markers = [
-            "authentication",
-            "identify",
-            "auth",
-            "password",
-            "401",
+    if getattr(sys, "frozen", False):
+        base = Path(sys._MEIPASS)
+        candidates = [
+            base / filename,
+            base / "resources" / filename,
+            base / "packaging" / "mac" / "resources" / filename,
         ]
-        if any(marker in msg.lower() for marker in auth_markers):
-            return CheckResult(
-                True,
-                "enabled_auth_failed",
-                "OBS websocket is reachable, but the password was rejected."
-            )
+    else:
+        base = Path(__file__).resolve().parents[2]
+        candidates = [
+            base / "packaging" / "mac" / "resources" / filename,
+            base / "assets" / filename,
+        ]
 
-        return CheckResult(
-            False,
-            "error",
-            f"Websocket port is open, but connection failed: {msg}"
-        )
+    for path in candidates:
+        if path.exists():
+            return path
 
+    return candidates[0]
 
-def _run_osascript(script: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["osascript", "-e", script],
+def is_macos():
+    return platform.system() == "Darwin"
+
+def obs_installed():
+    return Path("/Applications/OBS.app").exists()
+
+def ndi_runtime_installed():
+    return Path("/usr/local/lib/libndi.dylib").exists()
+# def ndi_tools_installed():
+#     return Path("/Library/NDI SDK for Apple").exists() or Path("/usr/local/lib").exists()
+
+def ensure_distroav_ready():
+    user_path = Path.home() / "Library/Application Support/obs-studio/plugins/distroav.plugin"
+    system_path = Path("/Library/Application Support/obs-studio/plugins/distroav.plugin")
+
+    user_exists = user_path.exists()
+    system_exists = system_path.exists()
+
+    print(f"[DISTROAV] system={system_exists}, user={user_exists}")
+
+    # Case 1: both exist
+    if system_exists and user_exists:
+        return True
+
+    # Case 2: system exists, user missing
+    if system_exists and not user_exists:
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(system_path, user_path)
+        return True
+
+    # Case 3 and 4: system missing
+    install_pkg("distroav-6.1.1-macos-universal.pkg")
+
+    # Re-check after install
+    system_exists = system_path.exists()
+    if not system_exists:
+        raise RuntimeError("DistroAV package install completed, but system plugin was not found.")
+
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if user_path.exists():
+        shutil.rmtree(user_path)
+
+    shutil.copytree(system_path, user_path)
+    return True
+
+def obs_scene_config_present():
+    return (
+        Path.home()
+        / "Library/Application Support/obs-studio/basic/scenes/CamComposite.json"
+    ).exists()
+
+def install_obs():
+    dmg = _resource_path("obs-studio-32.0.4-macos-apple.dmg")
+    if not dmg.exists():
+        raise FileNotFoundError(f"OBS dmg not found: {dmg}")
+
+    result = subprocess.run(
+        ["hdiutil", "attach", str(dmg), "-nobrowse"],
+        check=True,
         capture_output=True,
-        text=True
+        text=True,
     )
 
+    mount_point = None
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3 and parts[-1].startswith("/Volumes/"):
+            mount_point = parts[-1].strip()
+            break
 
-def check_hide_permission() -> CheckResult:
-    """
-    Checks whether the current host app (Terminal/PyCharm/future packaged app)
-    appears to have permission to use System Events.
+    if not mount_point:
+        raise RuntimeError("Could not determine OBS dmg mount point.")
 
-    This may trigger a macOS permission prompt the first time.
-    """
-    script = '''
-    tell application "System Events"
-        return name of first process
-    end tell
-    '''
+    try:
+        app_path = Path(mount_point) / "OBS.app"
+        if not app_path.exists():
+            raise RuntimeError(f"OBS.app not found in mounted dmg: {mount_point}")
 
-    result = _run_osascript(script)
-    stdout = (result.stdout or "").strip()
-    stderr = (result.stderr or "").strip()
-    combined = f"{stdout} {stderr}".strip().lower()
+        subprocess.run(["cp", "-R", str(app_path), "/Applications/"], check=True)
+    finally:
+        subprocess.run(["hdiutil", "detach", mount_point], check=False)
+# def install_obs():
+#     dmg = _resource_path("obs-studio-32.0.4-macos-apple.dmg")
+#     if not dmg.exists():
+#         raise FileNotFoundError(f"OBS dmg not found: {dmg}")
+#
+#     subprocess.run(["hdiutil", "attach", str(dmg), "-nobrowse"], check=True)
+#     try:
+#         for volume in ["/Volumes/OBS", "/Volumes/OBS Studio"]:
+#             app_path = Path(volume) / "OBS.app"
+#             if app_path.exists():
+#                 subprocess.run(["cp", "-R", str(app_path), "/Applications/"], check=True)
+#                 return
+#         raise RuntimeError("OBS.app not found in mounted dmg.")
+#     finally:
+#         subprocess.run(["hdiutil", "detach", "/Volumes/OBS"], check=False)
+#         subprocess.run(["hdiutil", "detach", "/Volumes/OBS Studio"], check=False)
 
-    if result.returncode == 0:
-        return CheckResult(
-            True,
-            "granted",
-            "System Events control is available."
-        )
+def install_pkg(pkg_name: str):
+    pkg = _resource_path(pkg_name)
+    if not pkg.exists():
+        raise FileNotFoundError(f"Package not found: {pkg}")
 
-    # Common denial patterns on macOS
-    denial_markers = [
-        "not authorized",
-        "not allowed",
-        "access not allowed",
-        "(-1743)",
-        "osascript is not allowed",
-        "system events got an error",
-    ]
-    if any(marker in combined for marker in denial_markers):
-        return CheckResult(
-            False,
-            "denied",
-            "Accessibility / automation permission is not granted for the current app."
-        )
+    print(f"[SETUP] Starting PKG install: {pkg_name}")
 
-    return CheckResult(
-        False,
-        "unknown",
-        f"Could not verify hide permission. osascript returned: {stderr or stdout or 'no output'}"
+    cmd = f'installer -pkg "{str(pkg)}" -target /'
+    apple_cmd = cmd.replace("\\", "\\\\").replace('"', '\\"')
+
+    prompt = (
+        f"CamComposite needs to install a package to continue setup. "
+        "Please enter your Mac administrator password."
+    )
+    apple_prompt = prompt.replace("\\", "\\\\").replace('"', '\\"')
+
+    result = subprocess.run(
+        [
+            "osascript",
+            "-e",
+            f'do shell script "{apple_cmd}" with administrator privileges with prompt "{apple_prompt}"',
+        ],
+        check=True,
+        text=True,
     )
 
+    print(f"[SETUP] Finished PKG install: {pkg_name} (returncode={result.returncode})")
+# def install_pkg(pkg_name: str):
+#     pkg = _resource_path(pkg_name)
+#     if not pkg.exists():
+#         raise FileNotFoundError(f"Package not found: {pkg}")
+#
+#     subprocess.run(["sudo", "installer", "-pkg", str(pkg), "-target", "/"], check=True)
 
-def run_all_checks(obs_password: Optional[str] = None, obs_port: int = 4455) -> Dict[str, Any]:
-    obs_result = check_obs_installed()
-    ws_result = check_obs_websocket(port=obs_port, password=obs_password)
-    hide_result = check_hide_permission()
+def copy_obs_scene_config():
+    src = _resource_path("CamComposite.json")
+    if not src.exists():
+        raise FileNotFoundError(f"OBS config not found: {src}")
 
-    overall_ok = obs_result.ok and ws_result.ok
-
-    return {
-        "overall_ok": overall_ok,
-        "obs_installed": obs_result,
-        "obs_websocket": ws_result,
-        "hide_permission": hide_result,
-    }
-
-
-def print_report(report: Dict[str, Any]) -> None:
-    print("\n=== Mac First-Run Check ===")
-
-    for key in ["obs_installed", "obs_websocket", "hide_permission"]:
-        item: CheckResult = report[key]
-        print(f"\n{key}:")
-        print(f"  ok     : {item.ok}")
-        print(f"  status : {item.status}")
-        print(f"  detail : {item.detail}")
-
-    print(f"\noverall_ok: {report['overall_ok']}")
-
-
-if __name__ == "__main__":
-    # Put your OBS websocket password here if you want auth tested.
-    OBS_PASSWORD = "mylens123"
-    # Example:
-    # OBS_PASSWORD = "mylens123"
-
-    report = run_all_checks(obs_password=OBS_PASSWORD, obs_port=4455)
-    print_report(report)
+    dst_dir = Path.home() / "Library/Application Support/obs-studio/basic/scenes"
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst_dir / "CamComposite.json")
