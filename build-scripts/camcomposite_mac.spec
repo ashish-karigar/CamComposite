@@ -58,7 +58,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="CamComposite.app",
-    icon=None,
+    icon="../assets/icons/CamComposite.icns",
     bundle_identifier="com.camcomposite.app",
     info_plist={
         "CFBundleName": "CamComposite",
