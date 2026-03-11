@@ -4,6 +4,7 @@ import tkinter as tk
 
 from app import CamCompositeApp
 from ui.startup_splash import StartupSplash
+
 from helpers.mac_first_run_check import (
     is_macos,
     obs_installed,
@@ -13,6 +14,11 @@ from helpers.mac_first_run_check import (
     install_obs,
     install_pkg,
     copy_obs_scene_config,
+)
+
+from helpers.win_first_run_check import (
+    is_windows,
+    ensure_windows_requirements,
 )
 
 
@@ -49,6 +55,12 @@ def run_startup_setup(root, splash):
             if not obs_scene_config_present():
                 copy_obs_scene_config()
                 splash.append_log("OBS scene config copied.")
+
+        elif is_windows():
+            ensure_windows_requirements(splash)
+
+        else:
+            raise RuntimeError("Unsupported operating system.")
 
         splash.set_status("Launching CamComposite...", "Setup complete.")
         splash.append_log("Setup complete. Launching app...")
