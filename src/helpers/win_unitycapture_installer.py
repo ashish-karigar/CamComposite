@@ -1,26 +1,15 @@
-# win_unitycapture_installer.py
 import os
 import shutil
 import subprocess
 import time
-import urllib.request
-import zipfile
 from pathlib import Path
 
 import pyvirtualcam
 from pyvirtualcam import PixelFormat
 
 
-UNITY_REPO_GIT = "https://github.com/schellingb/UnityCapture.git"
-UNITY_REPO_ZIP = "https://github.com/schellingb/UnityCapture/archive/refs/heads/master.zip"
-
-
 def _run(cmd, cwd=None):
     subprocess.check_call(cmd, cwd=cwd)
-
-
-def _have_git() -> bool:
-    return shutil.which("git") is not None
 
 
 def unitycapture_is_registered() -> bool:
@@ -41,43 +30,9 @@ def unitycapture_is_registered() -> bool:
         return False
 
 
-def _clone_or_download_unitycapture(dest_dir: Path) -> Path:
-    """
-    Ensures the UnityCapture repo exists at dest_dir.
-    Uses git if available; otherwise downloads ZIP.
-    Returns repo_dir.
-    """
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    repo_dir = dest_dir / "UnityCapture"
-
-    if repo_dir.exists():
-        return repo_dir
-
-    if _have_git():
-        _run(["git", "clone", UNITY_REPO_GIT, str(repo_dir)])
-        return repo_dir
-
-    # Fallback: ZIP download
-    zip_path = dest_dir / "UnityCapture_master.zip"
-    urllib.request.urlretrieve(UNITY_REPO_ZIP, zip_path)
-
-    with zipfile.ZipFile(zip_path, "r") as z:
-        z.extractall(dest_dir)
-
-    zip_path.unlink(missing_ok=True)
-
-    extracted = dest_dir / "UnityCapture-master"
-    if not extracted.exists():
-        raise RuntimeError("UnityCapture ZIP extracted folder not found.")
-
-    extracted.rename(repo_dir)
-    return repo_dir
-
-
 def _run_bat_as_admin(bat_path: Path, workdir: Path):
     """
     Launches a .bat with UAC elevation prompt.
-    Note: this only launches elevated process; the .bat itself may still fail.
     """
     import ctypes
 
@@ -87,27 +42,62 @@ def _run_bat_as_admin(bat_path: Path, workdir: Path):
     params = f'/c "{bat_path}"'
     ret = ctypes.windll.shell32.ShellExecuteW(
         None,
-        "runas",       # triggers UAC
+        "runas",
         "cmd.exe",
         params,
         str(workdir),
-        1
+        1,
     )
     if ret <= 32:
         raise RuntimeError(f"Failed to launch elevated installer (ShellExecuteW={ret}).")
 
 
+def _local_appdata_root() -> Path:
+    return Path(os.environ["LOCALAPPDATA"]) / "CamComposite"
+
+
+def _installed_unitycapture_source(project_root: Path) -> Path:
+    """
+    Source shipped with the app by PyInstaller / installer.
+    """
+    return project_root / "packaging" / "win" / "UnityCapture"
+
+
+def _prepare_local_unitycapture_copy(project_root: Path) -> Path:
+    """
+    Copies bundled UnityCapture payload from installed app folder into LOCALAPPDATA.
+    Returns the LOCALAPPDATA UnityCapture repo path.
+    """
+    source_dir = _installed_unitycapture_source(project_root)
+    if not source_dir.exists():
+        raise RuntimeError(f"Bundled UnityCapture folder not found at: {source_dir}")
+
+    appdata_root = _local_appdata_root()
+    appdata_root.mkdir(parents=True, exist_ok=True)
+
+    dest_dir = appdata_root / "UnityCapture"
+
+    # Fresh copy each time installation is needed, so we don't depend on partial old state
+    if dest_dir.exists():
+        shutil.rmtree(dest_dir)
+
+    shutil.copytree(source_dir, dest_dir)
+    return dest_dir
+
+
 def ensure_unitycapture_installed(project_root: Path) -> Path:
     """
     Ensures UnityCapture is installed/registered.
-    If missing, clones/downloads into <project_root>/packaging/win/UnityCapture and runs installer as admin.
-    Returns the UnityCapture repo path.
+    Uses the UnityCapture payload bundled with the app, copies it into LOCALAPPDATA,
+    then runs the installer as admin.
+    Returns the LOCALAPPDATA UnityCapture path.
     """
-    if unitycapture_is_registered():
-        return project_root / "packaging" / "win" / "UnityCapture"  # best-effort path; may not exist
+    local_repo_dir = _local_appdata_root() / "UnityCapture"
 
-    utils_dir = project_root / "packaging" / "win"
-    repo_dir = _clone_or_download_unitycapture(utils_dir)
+    if unitycapture_is_registered():
+        return local_repo_dir
+
+    repo_dir = _prepare_local_unitycapture_copy(project_root)
 
     install_bat = repo_dir / "Install" / "Install.bat"
     if not install_bat.exists():
@@ -118,7 +108,6 @@ def ensure_unitycapture_installed(project_root: Path) -> Path:
 
     _run_bat_as_admin(install_bat, install_bat.parent)
 
-    # Give Windows a moment to register devices before we re-check
     for _ in range(20):
         time.sleep(0.5)
         if unitycapture_is_registered():
