@@ -2,20 +2,26 @@
 
 from pathlib import Path
 
-project_root = Path.cwd()
-
-block_cipher = None
+SPEC_DIR = Path(SPEC).resolve().parent
+PROJECT_ROOT = SPEC_DIR.parent
 
 a = Analysis(
-    ['src/main.py'],
-    pathex=[str(project_root)],
+    [str(PROJECT_ROOT / "src" / "main.py")],
+    pathex=[
+        str(PROJECT_ROOT),
+        str(PROJECT_ROOT / "src"),
+    ],
     binaries=[],
     datas=[
-        # Example:
-        # ('assets', 'assets'),
-        # ('src/helpers', 'helpers'),
+        (str(PROJECT_ROOT / "assets"), "assets"),
+        (str(PROJECT_ROOT / "packaging" / "win"), "packaging/win"),
     ],
-    hiddenimports=[],
+    hiddenimports=[
+        "pyvirtualcam",
+        "cv2",
+        "PIL",
+        "numpy",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -30,7 +36,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='CamComposite',
+    name="CamComposite",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -38,9 +44,7 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon='assets/icons/CamComposite.ico',
+    icon=str(PROJECT_ROOT / "assets" / "icons" / "CamComposite.ico"),
 )
 
 coll = COLLECT(
@@ -51,5 +55,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='CamComposite',
+    name="CamComposite",
 )
