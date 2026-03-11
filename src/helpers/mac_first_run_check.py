@@ -161,7 +161,7 @@ def install_pkg(pkg_name: str):
 #     subprocess.run(["sudo", "installer", "-pkg", str(pkg), "-target", "/"], check=True)
 
 def copy_obs_scene_config():
-    src = _resource_path("CamComposite.json")
+    src = _resource_path("CamComposite-OBS.json")
     if not src.exists():
         raise FileNotFoundError(f"OBS config not found: {src}")
 
