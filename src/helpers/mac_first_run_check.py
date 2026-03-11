@@ -1,7 +1,6 @@
 from pathlib import Path
 import shutil
 import subprocess
-import platform
 
 
 def _resource_path(filename: str):
@@ -26,9 +25,6 @@ def _resource_path(filename: str):
             return path
 
     return candidates[0]
-
-def is_macos():
-    return platform.system() == "Darwin"
 
 def obs_installed():
     return Path("/Applications/OBS.app").exists()

@@ -6,12 +6,6 @@ from src.helpers.win_unitycapture_installer import (
     ensure_unitycapture_installed,
 )
 
-
-def is_windows() -> bool:
-    import platform
-    return platform.system() == "Windows"
-
-
 def project_root() -> Path:
     # src/helpers/win_first_run_check.py -> CamComposite/
     return Path(__file__).resolve().parents[2]

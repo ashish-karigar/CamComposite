@@ -1,5 +1,5 @@
 # CamComposite
-
+![icon_128x128.png](assets/icons/CamComposite.iconset/icon_128x128.png)
 ## Abstract
 
 CamComposite is a desktop application for combining one or two camera feeds into a single live composite output for video conferencing and related workflows. It lets the user detect available cameras, select up to two inputs, preview the combined layout, and publish the result as a virtual camera feed that other apps can use.
@@ -11,6 +11,11 @@ The app is designed for both macOS and Windows, with each platform using its own
 
 CamComposite includes a startup splash screen that checks platform-specific requirements on first launch and helps install missing components before opening the main UI.
 
+---
+
+<img src="assets/CamCompositeSplashScreen.png" alt="CamCompositeSplashScreen" width="400">
+
+![CamCompositeUI.png](assets/CamCompositeUI.png)
 ---
 
 ## How CamComposite Works
@@ -245,27 +250,36 @@ git clone <your-repository-url>
 cd CamComposite
 ```
 
-### 2. Create and activate a virtual environment
+[//]: # (### 2. Create and activate a virtual environment)
 
-#### macOS
+[//]: # ()
+[//]: # (#### macOS)
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
+[//]: # ()
+[//]: # (```bash)
 
-#### Windows PowerShell
+[//]: # (python3 -m venv .venv)
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
+[//]: # (source .venv/bin/activate)
+
+[//]: # (```)
+
+[//]: # (#### Windows PowerShell)
+
+[//]: # ()
+[//]: # (```powershell)
+
+[//]: # (python -m venv .venv)
+
+[//]: # (.\.venv\Scripts\Activate.ps1)
+
+[//]: # (```)
 
 ### 3. Install Python dependencies
 
 #### macOS
 
-```bash
+```bas
 pip install -r project-setup/requirements-mac.txt
 ```
 
