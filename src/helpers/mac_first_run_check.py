@@ -1,7 +1,6 @@
 from pathlib import Path
 import shutil
 import subprocess
-import platform
 
 
 def _resource_path(filename: str):
@@ -26,9 +25,6 @@ def _resource_path(filename: str):
             return path
 
     return candidates[0]
-
-def is_macos():
-    return platform.system() == "Darwin"
 
 def obs_installed():
     return Path("/Applications/OBS.app").exists()
@@ -161,7 +157,7 @@ def install_pkg(pkg_name: str):
 #     subprocess.run(["sudo", "installer", "-pkg", str(pkg), "-target", "/"], check=True)
 
 def copy_obs_scene_config():
-    src = _resource_path("CamComposite.json")
+    src = _resource_path("CamComposite-OBS.json")
     if not src.exists():
         raise FileNotFoundError(f"OBS config not found: {src}")
 

@@ -1,30 +1,32 @@
 import threading
 import traceback
 import tkinter as tk
+import platform
 
 from app import CamCompositeApp
 from ui.startup_splash import StartupSplash
 
-from helpers.mac_first_run_check import (
-    is_macos,
-    obs_installed,
-    ensure_distroav_ready,
-    ndi_runtime_installed,
-    obs_scene_config_present,
-    install_obs,
-    install_pkg,
-    copy_obs_scene_config,
-)
 
-from helpers.win_first_run_check import (
-    is_windows,
-    ensure_windows_requirements,
-)
+
+if platform.system() == "Darwin":
+    from helpers.mac_first_run_check import (
+        obs_installed,
+        ensure_distroav_ready,
+        ndi_runtime_installed,
+        obs_scene_config_present,
+        install_obs,
+        install_pkg,
+        copy_obs_scene_config,
+    )
+elif platform.system() == "Windows":
+    from helpers.win_first_run_check import (
+        ensure_windows_requirements,
+    )
 
 
 def run_startup_setup(root, splash):
     try:
-        if is_macos():
+        if platform.system() == "Darwin":
             splash.set_status("Checking OBS...", "Verifying required macOS dependencies.")
             splash.append_log("Checking OBS installation...")
             if not obs_installed():
@@ -56,7 +58,7 @@ def run_startup_setup(root, splash):
                 copy_obs_scene_config()
                 splash.append_log("OBS scene config copied.")
 
-        elif is_windows():
+        elif platform.system() == "Windows":
             ensure_windows_requirements(splash)
 
         else:

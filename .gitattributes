@@ -2,4 +2,3 @@ packaging/mac/resources/** filter=lfs diff=lfs merge=lfs -text
 packaging/mac/scripts/** filter=lfs diff=lfs merge=lfs -text
 packaging/mac/component.plist filter=lfs diff=lfs merge=lfs -text
 packaging/win/** filter=lfs diff=lfs merge=lfs -text
-release/** filter=lfs diff=lfs merge=lfs -text
