@@ -177,7 +177,7 @@ git clone <your-repository-url>
 cd CamComposite
 ```
 
-If the repository uses Git LFS for release artifacts or large files, make sure Git LFS is installed first and then run:
+The repository uses Git LFS for release artifacts or large files, make sure Git LFS is installed first and then run:
 
 ```bash
 git lfs install
