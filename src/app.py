@@ -31,6 +31,7 @@ class CamCompositeApp(tk.Tk):
         self.pipeline_running = False
 
         self.selected_cameras = []
+        self.max_cameras = 4
         self.camera_check_vars = {}
         self.camera_check_widgets = []
         self.detected_cameras = []
@@ -195,9 +196,9 @@ class CamCompositeApp(tk.Tk):
     def _on_camera_checkbox_toggle(self, cam_id):
         selected = [cid for cid, var in self.camera_check_vars.items() if var.get()]
 
-        if len(selected) > 2:
+        if len(selected) > self.max_cameras:
             self.camera_check_vars[cam_id].set(False)
-            self.set_footer_message("You can select a maximum of 2 cameras.", is_error=True)
+            self.set_footer_message(f"You can select a maximum of {self.max_cameras} cameras.", is_error=True)
             selected = [cid for cid, var in self.camera_check_vars.items() if var.get()]
         else:
             self.clear_footer_message()
@@ -209,9 +210,15 @@ class CamCompositeApp(tk.Tk):
             self._set_layout_state(disable=True)
             return
 
-        if len(self.selected_cameras) < 2 and self.mode_var.get() != "single":
+        selected_count = len(self.selected_cameras)
+
+        if selected_count < 2 and self.mode_var.get() != "single":
             self.mode_var.set("single")
-            self.preview_text_var.set("Select 2 cameras to enable dual-camera layouts")
+            self.preview_text_var.set("Select more cameras to enable multi-camera layouts")
+
+        allowed_layouts = self._allowed_layouts_for_selection_count(selected_count)
+        if self.mode_var.get() not in allowed_layouts:
+            self.mode_var.set(allowed_layouts[0])
 
         self._refresh_layout_tiles()
 
@@ -278,8 +285,16 @@ class CamCompositeApp(tk.Tk):
         if self.layout_disabled and mode_key != "single":
             return
 
-        if mode_key != "single" and len(self.selected_cameras) < 2:
-            self.set_footer_message("Select 2 cameras to use this layout.", is_error=True)
+        allowed_layouts = self._allowed_layouts_for_selection_count(len(self.selected_cameras))
+        if mode_key not in allowed_layouts:
+            required = {
+                "pip": 2,
+                "sbs": 2,
+                "stacked": 2,
+                "triple": 3,
+                "quad": 4,
+            }.get(mode_key, 1)
+            self.set_footer_message(f"Select {required} cameras to use this layout.", is_error=True)
             return
 
         self.mode_var.set(mode_key)
@@ -296,18 +311,29 @@ class CamCompositeApp(tk.Tk):
 
         self._refresh_layout_tiles()
 
+    def _allowed_layouts_for_selection_count(self, count):
+        if count <= 1:
+            return ["single"]
+        if count == 2:
+            return ["single", "pip", "sbs", "stacked"]
+        if count == 3:
+            return ["single", "pip", "sbs", "stacked", "triple"]
+        return ["single", "pip", "sbs", "stacked", "triple", "quad"]
+
     def _layout_label(self, mode_key):
         labels = {
             "pip": "Picture in Picture",
             "sbs": "Side by Side",
             "stacked": "Top and Bottom",
             "single": "Single Camera",
+            "triple": "3 Camera Grid",
+            "quad": "4 Camera Grid",
         }
         return labels.get(mode_key, mode_key)
 
     def swap_cameras(self):
         if len(self.selected_cameras) < 2:
-            self.set_footer_message("Select 2 cameras to swap.", is_error=True)
+            self.set_footer_message("Select at least 2 cameras to swap the first two feeds.", is_error=True)
             return
 
         self.selected_cameras[0], self.selected_cameras[1] = self.selected_cameras[1], self.selected_cameras[0]
@@ -333,8 +359,21 @@ class CamCompositeApp(tk.Tk):
             self.set_footer_message("Please detect and select at least 1 camera.", is_error=True)
             return
 
-        if self.mode_var.get() != "single" and len(self.selected_cameras) < 2:
-            self.set_footer_message("Please select 2 cameras for dual-camera layouts.", is_error=True)
+        required_counts = {
+            "single": 1,
+            "pip": 2,
+            "sbs": 2,
+            "stacked": 2,
+            "triple": 3,
+            "quad": 4,
+        }
+        required = required_counts.get(self.mode_var.get(), 1)
+
+        if len(self.selected_cameras) < required:
+            self.set_footer_message(
+                f"Please select at least {required} camera(s) for {self._layout_label(self.mode_var.get())}.",
+                is_error=True,
+            )
             return
 
         try:
@@ -474,7 +513,7 @@ class CamCompositeApp(tk.Tk):
                 self.preview_text_var.set("Single camera mode auto-selected")
             else:
                 self.setup_var.set(f"{len(cameras)} cameras detected")
-                self.preview_text_var.set("Select up to 2 cameras")
+                self.preview_text_var.set(f"Select up to {self.max_cameras} cameras")
 
         except Exception as e:
             messagebox.showerror("Detect Cameras", f"Camera detection failed:\n{e}")
