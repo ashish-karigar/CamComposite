@@ -42,6 +42,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    contents_directory=".",
     disable_windowed_traceback=False,
     target_arch=None,
     icon=str(PROJECT_ROOT / "assets" / "icons" / "CamComposite.ico"),

@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+import sys
 
 import pyvirtualcam
 from pyvirtualcam import PixelFormat
@@ -59,8 +60,27 @@ def _local_appdata_root() -> Path:
 def _installed_unitycapture_source(project_root: Path) -> Path:
     """
     Source shipped with the app by PyInstaller / installer.
+    Handles both development and installed Windows app paths.
     """
-    return project_root / "packaging" / "win" / "UnityCapture"
+
+    possible_roots = [
+        project_root,
+    ]
+
+    # When running as installed PyInstaller app
+    if getattr(sys, "frozen", False):
+        possible_roots.insert(0, Path(sys.executable).resolve().parent)
+
+    # When running from source
+    possible_roots.append(Path(__file__).resolve().parents[2])
+
+    for root in possible_roots:
+        candidate = root / "packaging" / "win" / "UnityCapture"
+        if candidate.exists():
+            return candidate
+
+    # Return the most likely path for a clear error message
+    return possible_roots[0] / "packaging" / "win" / "UnityCapture"
 
 
 def _prepare_local_unitycapture_copy(project_root: Path) -> Path:
