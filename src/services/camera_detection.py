@@ -1,105 +1,97 @@
-# camera_detection.py
 import platform
 import re
 import shutil
 import subprocess
-import cv2
+from functools import lru_cache
 from pathlib import Path
+
+import cv2
+
+
+HIDDEN_MAC_KEYWORDS = ("obs", "virtual camera", "capture screen")
+LOW_PRIORITY_MAC_KEYWORDS = ("iphone", "continuity", "desk view")
+
 
 def detect_cameras_for_current_os():
     current_os = platform.system()
 
     if current_os == "Darwin":
-        named_cameras = detect_cameras_macos()
-    elif current_os == "Windows":
-        named_cameras = detect_cameras_windows()
-    else:
-        return []
+        return detect_cameras_macos()
 
-    preview_indices = detect_opencv_camera_indices()
+    if current_os == "Windows":
+        return detect_cameras_windows()
 
-    cameras = []
-    for i, cam in enumerate(named_cameras):
-        preview_index = preview_indices[i] if i < len(preview_indices) else cam["id"]
-        cameras.append({
-            "id": cam["id"],
-            "name": cam["name"],
-            "preview_index": preview_index,
-        })
+    return []
 
-    return cameras
 
 def detect_cameras_macos():
-    ffmpeg_path = _find_ffmpeg()
-    if not ffmpeg_path:
-        raise RuntimeError("FFmpeg not found. Please install FFmpeg and make sure it is in PATH.")
+    from .mac_avfoundation_capture import list_avfoundation_cameras
 
-    result = subprocess.run(
-        [ffmpeg_path, "-f", "avfoundation", "-list_devices", "true", "-i", ""],
-        capture_output=True,
-        text=True,
-    )
+    cameras = list_avfoundation_cameras()
 
-    output = (result.stdout or "") + "\n" + (result.stderr or "")
-    return _parse_macos_avfoundation_devices(output)
+    visible_cameras = []
+    for camera in cameras:
+        name = camera["name"].lower()
 
-# def detect_cameras_windows():
-#     ffmpeg_path = _find_ffmpeg()
-#     if not ffmpeg_path:
-#         raise RuntimeError("FFmpeg not found. Please install FFmpeg and make sure it is in PATH.")
-#
-#     result = subprocess.run(
-#         [ffmpeg_path, "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
-#         capture_output=True,
-#         text=True,
-#     )
-#
-#     output = (result.stdout or "") + "\n" + (result.stderr or "")
-#     return _parse_windows_dshow_devices(output)
+        if "obs" in name or "virtual camera" in name:
+            continue
+
+        visible_cameras.append(camera)
+
+    return sorted(visible_cameras, key=_mac_camera_sort_key)
+
 
 def detect_cameras_windows():
-    preview_indices = detect_opencv_camera_indices()
-
     cameras = []
-    for idx in preview_indices:
+
+    for index in _detect_opencv_camera_indices_windows():
         cameras.append({
-            "id": idx,
-            "name": f"Camera {idx}",
+            "id": index,
+            "name": f"Camera {index}",
+            "preview_index": index,
         })
 
     return cameras
 
-def detect_opencv_camera_indices(max_tested=10):
+
+def _detect_opencv_camera_indices_windows(max_tested=8, stop_after_misses=3):
     indices = []
+    misses = 0
 
     for index in range(max_tested):
-        if platform.system() == "Windows":
-            cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-        elif platform.system() == "Darwin":
-            cap = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
-        else:
-            cap = cv2.VideoCapture(index)
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
 
         if cap is not None and cap.isOpened():
             ok, _ = cap.read()
             cap.release()
+
             if ok:
                 indices.append(index)
+                misses = 0
+                continue
+
+        misses += 1
+
+        if misses >= stop_after_misses and indices:
+            break
 
     return indices
 
-# def detect_opencv_camera_indices(max_tested=10):
-#     indices = []
-#
-#     for index in range(max_tested):
-#         cap = cv2.VideoCapture(index)
-#         if cap is not None and cap.isOpened():
-#             ok, _ = cap.read()
-#             cap.release()
-#             if ok:
-#                 indices.append(index)
-#
-#     return indices
+
+@lru_cache(maxsize=1)
+def _find_ffmpeg():
+    project_root = Path(__file__).resolve().parents[2]
+    bundled_ffmpeg = project_root / "assets" / "bin" / "macos" / "ffmpeg"
+
+    if bundled_ffmpeg.exists() and _is_ffmpeg_working(str(bundled_ffmpeg)):
+        return str(bundled_ffmpeg)
+
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg and _is_ffmpeg_working(system_ffmpeg):
+        return system_ffmpeg
+
+    return None
+
 
 def _is_ffmpeg_working(ffmpeg_path: str) -> bool:
     try:
@@ -107,106 +99,78 @@ def _is_ffmpeg_working(ffmpeg_path: str) -> bool:
             [ffmpeg_path, "-version"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=3,
+            timeout=2,
         )
         return result.returncode == 0
     except Exception:
         return False
 
 
-def _find_ffmpeg():
-    project_root = Path(__file__).resolve().parents[2]
-
-    bundled_ffmpeg = project_root / "assets" / "bin" / "macos" / "ffmpeg"
-
-    # 1. Try bundled ffmpeg first
-    if bundled_ffmpeg.exists() and _is_ffmpeg_working(str(bundled_ffmpeg)):
-        return str(bundled_ffmpeg)
-
-    # 2. Fallback to system/homebrew ffmpeg
-    system_ffmpeg = shutil.which("ffmpeg")
-    if system_ffmpeg and _is_ffmpeg_working(system_ffmpeg):
-        return system_ffmpeg
-
-    # 3. Nothing usable found
-    return None
-
 def _parse_macos_avfoundation_devices(output: str):
     cameras = []
+    seen_names = set()
     in_video_section = False
 
-    for line in output.splitlines():
-        line = line.strip()
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
 
         if "AVFoundation video devices" in line:
             in_video_section = True
             continue
 
         if "AVFoundation audio devices" in line:
-            in_video_section = False
-            continue
+            break
 
         if not in_video_section:
             continue
 
         match = re.search(r"\[(\d+)\]\s+(.+)", line)
-        if match:
-            cam_id = int(match.group(1))
-            cam_name = match.group(2).strip()
+        if not match:
+            continue
 
-            if not _is_duplicate_name(cameras, cam_name):
-                cameras.append({"id": cam_id, "name": cam_name})
+        cam_id = int(match.group(1))
+        cam_name = match.group(2).strip()
+        normalized = cam_name.lower()
+
+        if any(keyword in normalized for keyword in HIDDEN_MAC_KEYWORDS):
+            continue
+
+        if normalized in seen_names:
+            continue
+
+        seen_names.add(normalized)
+
+        cameras.append({
+            "id": cam_id,
+            "name": cam_name,
+            "preview_index": len(cameras),
+        })
 
     return cameras
 
-def _parse_windows_dshow_devices(output: str):
-    cameras = []
-    in_video_section = False
-    next_id = 0
 
-    for raw_line in output.splitlines():
-        line = raw_line.strip()
+def _mac_camera_sort_key(camera):
+    name = camera["name"].lower()
 
-        if "DirectShow video devices" in line:
-            in_video_section = True
-            continue
+    is_low_priority = any(keyword in name for keyword in LOW_PRIORITY_MAC_KEYWORDS)
 
-        if "DirectShow audio devices" in line:
-            in_video_section = False
-            continue
-
-        if not in_video_section:
-            continue
-
-        match = re.search(r'"([^"]+)"', line)
-        if match:
-            cam_name = match.group(1).strip()
-
-            if cam_name.startswith("@device_"):
-                continue
-
-            if not _is_duplicate_name(cameras, cam_name):
-                cameras.append({"id": next_id, "name": cam_name})
-                next_id += 1
-
-    return cameras
-
-def _is_duplicate_name(devices, name):
-    return any(device["name"] == name for device in devices)
+    return (
+        1 if is_low_priority else 0,
+        camera["name"].lower(),
+        camera["id"],
+    )
 
 
 if __name__ == "__main__":
     print("ffmpeg path:", _find_ffmpeg())
-    try:
-        cameras = detect_cameras_for_current_os()
 
-        if not cameras:
-            print("No cameras detected.")
-        else:
-            print("Detected cameras:")
-            for cam in cameras:
-                print(
-                    f'  ID: {cam["id"]} | Preview Index: {cam["preview_index"]} | Name: {cam["name"]}'
-                )
-    except Exception as e:
-        print(f"Camera detection failed: {e}")
+    cameras = detect_cameras_for_current_os()
+
+    if not cameras:
+        print("No cameras detected.")
+    else:
+        print("Detected cameras:")
+        for cam in cameras:
+            print(
+                f'  ID: {cam["id"]} | Preview Index: {cam["preview_index"]} | Name: {cam["name"]}'
+            )

@@ -1,6 +1,14 @@
 # preview_service.py
 import cv2
+import numpy as np
 from PIL import Image, ImageTk
+
+from .mac_avfoundation_capture import MacAVFoundationCapture
+
+
+OUTPUT_W = 1280
+OUTPUT_H = 720
+PREVIEW_DELAY_MS = 30
 
 
 class PreviewService:
@@ -16,15 +24,6 @@ class PreviewService:
     def set_frame_forwarder(self, forwarder):
         self.frame_forwarder = forwarder
 
-    def _open_capture(self, preview_index):
-        if self.app.current_os == "Darwin":
-            cap = cv2.VideoCapture(int(preview_index), cv2.CAP_AVFOUNDATION)
-        elif self.app.current_os == "Windows":
-            cap = cv2.VideoCapture(int(preview_index), cv2.CAP_DSHOW)
-        else:
-            cap = cv2.VideoCapture(int(preview_index))
-        return cap
-
     def start(self, selected_camera_ids, mode, render_local=True):
         self.stop()
 
@@ -32,7 +31,6 @@ class PreviewService:
             raise RuntimeError("No camera selected.")
 
         self.render_local = render_local
-
         self.captures = []
 
         required_counts = {
@@ -43,8 +41,8 @@ class PreviewService:
             "triple": 3,
             "quad": 4,
         }
-        required = required_counts.get(mode, 1)
 
+        required = required_counts.get(mode, 1)
         camera_ids_to_open = selected_camera_ids[:required]
 
         for idx, selected_id in enumerate(camera_ids_to_open):
@@ -53,7 +51,7 @@ class PreviewService:
                 self.stop()
                 raise RuntimeError(f'Camera #{idx + 1} not found.')
 
-            cap = self._open_capture(cam["preview_index"])
+            cap = self._open_capture(cam)
             if not cap.isOpened():
                 self.stop()
                 raise RuntimeError(f'Failed to open "{cam["name"]}".')
@@ -69,6 +67,22 @@ class PreviewService:
 
         self._update_frame()
 
+    def _open_capture(self, camera):
+        if self.app.current_os == "Darwin":
+            cap = MacAVFoundationCapture(
+                unique_id=camera["unique_id"],
+                width=OUTPUT_W,
+                height=OUTPUT_H,
+                fps=30,
+            )
+            cap.open()
+            return cap
+
+        if self.app.current_os == "Windows":
+            return cv2.VideoCapture(int(camera["preview_index"]), cv2.CAP_DSHOW)
+
+        return cv2.VideoCapture(int(camera["preview_index"]))
+
     def _camera_by_selected_id(self, selected_id):
         for cam in self.app.detected_cameras:
             if str(cam["id"]) == str(selected_id):
@@ -80,8 +94,8 @@ class PreviewService:
             return
 
         mode = self.app.mode_var.get()
-
         frames = []
+
         for cap in self.captures:
             ok, frame = cap.read()
             if not ok or frame is None:
@@ -115,33 +129,30 @@ class PreviewService:
             y = (canvas_h - img_h) // 2
 
             self.canvas_image_id = self.app.preview_canvas.create_image(
-                x, y,
+                x,
+                y,
                 anchor="nw",
-                image=photo
+                image=photo,
             )
 
-        self.preview_job = self.app.after(30, self._update_frame)
+        self.preview_job = self.app.after(PREVIEW_DELAY_MS, self._update_frame)
 
     def _compose_frame(self, frames, mode):
         if not frames:
             raise RuntimeError("No frames available for preview.")
 
         if mode == "single" or len(frames) == 1:
-            return frames[0]
+            return self._fit_and_pad(frames[0], OUTPUT_W, OUTPUT_H)
 
         if mode == "sbs" and len(frames) >= 2:
-            frame_a, frame_b = frames[0], frames[1]
-            target_h = min(frame_a.shape[0], frame_b.shape[0])
-            a = self._resize_to_height_keep_aspect(frame_a, target_h)
-            b = self._resize_to_height_keep_aspect(frame_b, target_h)
-            return cv2.hconcat([a, b])
+            left = self._fit_and_pad(frames[0], OUTPUT_W // 2, OUTPUT_H)
+            right = self._fit_and_pad(frames[1], OUTPUT_W // 2, OUTPUT_H)
+            return cv2.hconcat([left, right])
 
         if mode == "stacked" and len(frames) >= 2:
-            frame_a, frame_b = frames[0], frames[1]
-            target_w = min(frame_a.shape[1], frame_b.shape[1])
-            a = self._resize_to_width_keep_aspect(frame_a, target_w)
-            b = self._resize_to_width_keep_aspect(frame_b, target_w)
-            return cv2.vconcat([a, b])
+            top = self._fit_and_pad(frames[0], OUTPUT_W, OUTPUT_H // 2)
+            bottom = self._fit_and_pad(frames[1], OUTPUT_W, OUTPUT_H // 2)
+            return cv2.vconcat([top, bottom])
 
         if mode == "pip" and len(frames) >= 2:
             return self._compose_pip(frames[0], frames[1])
@@ -152,17 +163,15 @@ class PreviewService:
         if mode == "quad" and len(frames) >= 4:
             return self._compose_quad_grid(frames[:4])
 
-        return frames[0]
+        return self._fit_and_pad(frames[0], OUTPUT_W, OUTPUT_H)
 
     def _compose_pip(self, base_frame, inset_frame):
-        base = base_frame.copy()
+        base = self._fit_and_pad(base_frame, OUTPUT_W, OUTPUT_H)
         base_h, base_w = base.shape[:2]
 
-        max_inset_w = int(base_w * 0.28)
-        max_inset_h = int(base_h * 0.28)
-
-        inset = self._fit_inside_box(inset_frame, max_inset_w, max_inset_h)
-        inset_h, inset_w = inset.shape[:2]
+        inset_w = int(base_w * 0.28)
+        inset_h = int(base_h * 0.28)
+        inset = self._fit_and_pad(inset_frame, inset_w, inset_h)
 
         margin = 20
         x1 = base_w - inset_w - margin
@@ -175,55 +184,39 @@ class PreviewService:
         return base
 
     def _compose_triple_grid(self, frames):
-        frame_tl = frames[0]
-        frame_bl = frames[1]
-        frame_br = frames[2]
+        cell_w = OUTPUT_W // 2
+        cell_h = OUTPUT_H // 2
 
-        cell_w = 640
-        cell_h = 360
-
-        tl = self._fit_and_pad(frame_tl, cell_w, cell_h)
+        tl = self._fit_and_pad(frames[0], cell_w, cell_h)
         blank = self._blank_cell(cell_w, cell_h)
-        bl = self._fit_and_pad(frame_bl, cell_w, cell_h)
-        br = self._fit_and_pad(frame_br, cell_w, cell_h)
+        bl = self._fit_and_pad(frames[1], cell_w, cell_h)
+        br = self._fit_and_pad(frames[2], cell_w, cell_h)
 
         top_row = cv2.hconcat([tl, blank])
         bottom_row = cv2.hconcat([bl, br])
         return cv2.vconcat([top_row, bottom_row])
 
     def _compose_quad_grid(self, frames):
-        frame_tl = frames[0]
-        frame_tr = frames[1]
-        frame_bl = frames[2]
-        frame_br = frames[3]
+        cell_w = OUTPUT_W // 2
+        cell_h = OUTPUT_H // 2
 
-        cell_w = 640
-        cell_h = 360
-
-        tl = self._fit_and_pad(frame_tl, cell_w, cell_h)
-        tr = self._fit_and_pad(frame_tr, cell_w, cell_h)
-        bl = self._fit_and_pad(frame_bl, cell_w, cell_h)
-        br = self._fit_and_pad(frame_br, cell_w, cell_h)
+        tl = self._fit_and_pad(frames[0], cell_w, cell_h)
+        tr = self._fit_and_pad(frames[1], cell_w, cell_h)
+        bl = self._fit_and_pad(frames[2], cell_w, cell_h)
+        br = self._fit_and_pad(frames[3], cell_w, cell_h)
 
         top_row = cv2.hconcat([tl, tr])
         bottom_row = cv2.hconcat([bl, br])
         return cv2.vconcat([top_row, bottom_row])
 
     def _blank_cell(self, width, height):
-        return cv2.cvtColor(
-            cv2.resize(
-                cv2.UMat(height, width, cv2.CV_8UC1).get(),
-                (width, height)
-            ),
-            cv2.COLOR_GRAY2BGR
-        )
+        return np.zeros((height, width, 3), dtype=np.uint8)
 
     def _fit_and_pad(self, frame, box_w, box_h):
         fitted = self._fit_inside_box(frame, box_w, box_h)
         h, w = fitted.shape[:2]
 
         canvas = self._blank_cell(box_w, box_h)
-
         x = (box_w - w) // 2
         y = (box_h - h) // 2
 
@@ -232,24 +225,15 @@ class PreviewService:
 
     def _fit_inside_box(self, frame, box_w, box_h):
         h, w = frame.shape[:2]
+
+        if h <= 0 or w <= 0:
+            return self._blank_cell(box_w, box_h)
+
         scale = min(box_w / w, box_h / h)
-
         new_w = max(1, int(w * scale))
         new_h = max(1, int(h * scale))
 
-        return cv2.resize(frame, (new_w, new_h))
-
-    def _resize_to_height_keep_aspect(self, frame, target_h):
-        h, w = frame.shape[:2]
-        scale = target_h / h
-        new_w = max(1, int(w * scale))
-        return cv2.resize(frame, (new_w, target_h))
-
-    def _resize_to_width_keep_aspect(self, frame, target_w):
-        h, w = frame.shape[:2]
-        scale = target_w / w
-        new_h = max(1, int(h * scale))
-        return cv2.resize(frame, (target_w, new_h))
+        return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
     def stop(self):
         if self.preview_job is not None:
@@ -264,8 +248,8 @@ class PreviewService:
                 cap.release()
             except Exception:
                 pass
-        self.captures = []
 
+        self.captures = []
         self.preview_image_ref = None
 
         if hasattr(self.app, "preview_canvas"):
