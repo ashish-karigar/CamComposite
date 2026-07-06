@@ -93,7 +93,24 @@ class PreviewService:
             return cap
 
         if self.app.current_os == "Windows":
-            return cv2.VideoCapture(int(camera["preview_index"]), cv2.CAP_DSHOW)
+            cap = cv2.VideoCapture(int(camera["preview_index"]), cv2.CAP_DSHOW)
+
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.output_w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.output_h)
+            cap.set(cv2.CAP_PROP_FPS, self.output_fps)
+
+            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            actual_fps = cap.get(cv2.CAP_PROP_FPS)
+
+            print(
+                f'[CAPTURE] {camera["name"]}: '
+                f'requested={self.output_w}x{self.output_h}@{self.output_fps}, '
+                f'actual={actual_w}x{actual_h}@{actual_fps}'
+            )
+
+            return cap
 
         return cv2.VideoCapture(int(camera["preview_index"]))
 
