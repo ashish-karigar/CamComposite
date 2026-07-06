@@ -7,6 +7,24 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
 
+std::string JsonEscape(const std::string& input) {
+    std::string output;
+    output.reserve(input.size());
+
+    for (char c : input) {
+        switch (c) {
+            case '\\': output += "\\\\"; break;
+            case '"': output += "\\\""; break;
+            case '\n': output += "\\n"; break;
+            case '\r': output += "\\r"; break;
+            case '\t': output += "\\t"; break;
+            default: output += c; break;
+        }
+    }
+
+    return output;
+}
+
 std::string WideToUtf8(const std::wstring& wide) {
     if (wide.empty()) return "";
 
@@ -116,10 +134,18 @@ int main() {
             std::cout << ",\n";
         }
 
+        if (
+            name.find("Unity") != std::string::npos ||
+            name.find("Virtual") != std::string::npos
+        ) {
+            moniker->Release();
+            continue;
+        }
+
         std::cout << "  {\n";
         std::cout << "    \"id\": " << index << ",\n";
-        std::cout << "    \"name\": \"" << name << "\",\n";
-        std::cout << "    \"device_path\": \"" << devicePath << "\",\n";
+        std::cout << "    \"name\": \"" << JsonEscape(name) << "\",\n";
+        std::cout << "    \"device_path\": \"" << JsonEscape(devicePath) << "\",\n";
         std::cout << "    \"preview_index\": " << index << "\n";
         std::cout << "  }";
 
