@@ -42,6 +42,15 @@ def detect_cameras_macos():
 
 
 def detect_cameras_windows():
+    try:
+        from .windows_native_discovery import discover_windows_cameras_native
+    except ImportError:
+        from windows_native_discovery import discover_windows_cameras_native
+
+    native_cameras = discover_windows_cameras_native()
+    if native_cameras:
+        return native_cameras
+
     cameras = []
 
     for index in _detect_opencv_camera_indices_windows():

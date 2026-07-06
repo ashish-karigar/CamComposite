@@ -130,16 +130,16 @@ int main() {
             CoTaskMemFree(displayName);
         }
 
-        if (!first) {
-            std::cout << ",\n";
-        }
-
         if (
             name.find("Unity") != std::string::npos ||
             name.find("Virtual") != std::string::npos
         ) {
             moniker->Release();
             continue;
+        }
+
+        if (!first) {
+            std::cout << ",\n";
         }
 
         std::cout << "  {\n";
