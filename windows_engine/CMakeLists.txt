@@ -12,3 +12,11 @@ target_link_libraries(camera_discovery
     oleaut32
     strmiids
 )
+
+add_executable(camera_capture_test camera_capture_test.cpp)
+
+target_link_libraries(camera_capture_test
+    ole32
+    oleaut32
+    strmiids
+)
