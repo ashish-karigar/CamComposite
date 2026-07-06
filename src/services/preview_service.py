@@ -207,12 +207,26 @@ class PreviewService:
             cam_id = str(cam_id)
 
             if cam_id in self.failed_camera_ids:
+                if not self.usb_warning_shown:
+                    self.usb_warning_shown = True
+                    self._show_status_warning(
+                        "One camera could not start. USB bandwidth may be overloaded. "
+                        "Try connecting the capture card/cameras to different USB ports."
+                    )
+
                 frames.append(self._blank_cell(self.output_w, self.output_h))
                 continue
 
             cap = self.captures.get(cam_id)
 
             if cap is None:
+                if not self.usb_warning_shown:
+                    self.usb_warning_shown = True
+                    self._show_status_warning(
+                        "One camera could not start. USB bandwidth may be overloaded. "
+                        "Try connecting the capture card/cameras to different USB ports."
+                    )
+
                 frames.append(self._blank_cell(self.output_w, self.output_h))
                 continue
 
