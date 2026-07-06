@@ -36,6 +36,7 @@ class PreviewService:
         self.output_fps = self.video_profile["fps"]
         self.failed_frame_counts = {}
         self.usb_warning_shown = False
+        self.failed_camera_ids = set()
 
     def set_frame_forwarder(self, forwarder):
         self.frame_forwarder = forwarder
@@ -172,14 +173,28 @@ class PreviewService:
             if cam is None:
                 raise RuntimeError(f"Camera {cam_id} not found.")
 
-            cap = self._open_capture(cam, self.app.mode_var.get())
-            if not cap.isOpened():
-                raise RuntimeError(f'Failed to open "{cam["name"]}".')
+            try:
+                cap = self._open_capture(cam, self.app.mode_var.get())
 
-            self.captures[cam_id] = ThreadedCapture(
-                cap,
-                name=cam.get("name", f"Camera {cam_id}")
-            ).start()
+                if not cap.isOpened():
+                    raise RuntimeError(f'Failed to open "{cam["name"]}".')
+
+                self.captures[cam_id] = ThreadedCapture(
+                    cap,
+                    name=cam.get("name", f"Camera {cam_id}")
+                ).start()
+
+                self.failed_camera_ids.discard(cam_id)
+
+            except Exception as e:
+                print(f"Camera open warning for {cam.get('name', cam_id)}: {e}")
+
+                self.failed_camera_ids.add(cam_id)
+
+                self._show_status_warning(
+                    "One camera could not start. USB bandwidth may be overloaded. "
+                    "Try connecting the capture card/cameras to different USB ports."
+                )
 
     def _update_frame(self):
         if not self.active_camera_ids:
@@ -190,12 +205,19 @@ class PreviewService:
 
         for cam_id in self.active_camera_ids:
             cam_id = str(cam_id)
+
+            if cam_id in self.failed_camera_ids:
+                frames.append(self._blank_cell(self.output_w, self.output_h))
+                continue
+
             cap = self.captures.get(cam_id)
 
             if cap is None:
+                frames.append(self._blank_cell(self.output_w, self.output_h))
                 continue
 
             ok, frame = cap.read()
+
             if ok and frame is not None:
                 self.failed_frame_counts[cam_id] = 0
                 self.last_good_frames[cam_id] = frame
@@ -207,24 +229,14 @@ class PreviewService:
             if self.failed_frame_counts[cam_id] >= 30 and not self.usb_warning_shown:
                 self.usb_warning_shown = True
                 self._show_status_warning(
-
                     "Camera feed unstable. USB bandwidth may be overloaded. "
-
                     "Try connecting the capture card/cameras to different USB ports."
-
                 )
 
-            if ok and frame is not None:
-                self.last_good_frames[cam_id] = frame
-                frames.append(frame)
-                continue
-
-            # Use previous good frame instead of freezing entire layout
             if cam_id in self.last_good_frames:
                 frames.append(self.last_good_frames[cam_id])
                 continue
 
-            # Camera not ready yet: use blank frame temporarily
             frames.append(self._blank_cell(self.output_w, self.output_h))
 
         if not frames:
@@ -367,6 +379,7 @@ class PreviewService:
         self.last_good_frames = {}
         self.failed_frame_counts = {}
         self.usb_warning_shown = False
+        self.failed_camera_ids = set()
         if self.preview_job is not None:
             try:
                 self.app.after_cancel(self.preview_job)
