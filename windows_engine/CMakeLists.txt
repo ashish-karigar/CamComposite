@@ -20,3 +20,9 @@ add_executable(camera_capture_test camera_capture_test.cpp)
 target_link_libraries(camera_capture_test
     ${OpenCV_LIBS}
 )
+
+add_executable(video_engine video_engine.cpp)
+
+target_link_libraries(video_engine
+    ${OpenCV_LIBS}
+)
