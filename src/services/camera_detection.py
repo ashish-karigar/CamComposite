@@ -4,7 +4,7 @@ import re
 import shutil
 import subprocess
 import cv2
-
+from pathlib import Path
 
 def detect_cameras_for_current_os():
     current_os = platform.system()
@@ -101,21 +101,34 @@ def detect_opencv_camera_indices(max_tested=10):
 #
 #     return indices
 
+def _is_ffmpeg_working(ffmpeg_path: str) -> bool:
+    try:
+        result = subprocess.run(
+            [ffmpeg_path, "-version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def _find_ffmpeg():
-    import os
-    import sys
-    from pathlib import Path
+    project_root = Path(__file__).resolve().parents[2]
 
-    if getattr(sys, "frozen", False):
-        base_path = Path(sys._MEIPASS)
-    else:
-        base_path = Path(__file__).resolve().parents[2]
+    bundled_ffmpeg = project_root / "assets" / "bin" / "macos" / "ffmpeg"
 
-    ffmpeg_path = base_path / "assets" / "bin" / "macos" / "ffmpeg"
+    # 1. Try bundled ffmpeg first
+    if bundled_ffmpeg.exists() and _is_ffmpeg_working(str(bundled_ffmpeg)):
+        return str(bundled_ffmpeg)
 
-    if ffmpeg_path.exists():
-        return str(ffmpeg_path)
+    # 2. Fallback to system/homebrew ffmpeg
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg and _is_ffmpeg_working(system_ffmpeg):
+        return system_ffmpeg
 
+    # 3. Nothing usable found
     return None
 
 def _parse_macos_avfoundation_devices(output: str):
