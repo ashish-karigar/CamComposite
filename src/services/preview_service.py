@@ -43,7 +43,7 @@ class PreviewService:
 
     def _show_status_warning(self, message):
         if hasattr(self.app, "set_footer_message"):
-            self.app.set_footer_message(message, is_error=True)
+            self.app.after(0, lambda: self.app.set_footer_message(message, is_error=True))
         else:
             print(message)
 
