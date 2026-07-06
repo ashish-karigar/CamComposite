@@ -21,7 +21,8 @@ PREVIEW_DELAY_MS = 30
 class PreviewService:
     def __init__(self, app):
         self.app = app
-        self.captures = []
+        self.captures = {}
+        self.active_camera_ids = []
         self.preview_job = None
         self.preview_image_ref = None
         self.canvas_image_id = None
@@ -36,13 +37,12 @@ class PreviewService:
         self.frame_forwarder = forwarder
 
     def start(self, selected_camera_ids, mode, render_local=True):
-        self.stop()
+        self._cancel_preview_loop()
 
         if not selected_camera_ids:
             raise RuntimeError("No camera selected.")
 
         self.render_local = render_local
-        self.captures = []
 
         required_counts = {
             "single": 1,
@@ -56,18 +56,8 @@ class PreviewService:
         required = required_counts.get(mode, 1)
         camera_ids_to_open = selected_camera_ids[:required]
 
-        for idx, selected_id in enumerate(camera_ids_to_open):
-            cam = self._camera_by_selected_id(selected_id)
-            if cam is None:
-                self.stop()
-                raise RuntimeError(f'Camera #{idx + 1} not found.')
-
-            cap = self._open_capture(cam)
-            if not cap.isOpened():
-                self.stop()
-                raise RuntimeError(f'Failed to open "{cam["name"]}".')
-
-            self.captures.append(cap)
+        self.active_camera_ids = [str(cam_id) for cam_id in camera_ids_to_open]
+        self._sync_open_captures(self.active_camera_ids)
 
         if self.render_local:
             self.app.preview_text_label.place_forget()
@@ -120,19 +110,62 @@ class PreviewService:
                 return cam
         return None
 
+    def _cancel_preview_loop(self):
+        if self.preview_job is not None:
+            try:
+                self.app.after_cancel(self.preview_job)
+            except Exception:
+                pass
+            self.preview_job = None
+
+    def _sync_open_captures(self, needed_ids):
+        needed = set(str(x) for x in needed_ids)
+
+        for cam_id in list(self.captures.keys()):
+            if cam_id not in needed:
+                try:
+                    self.captures[cam_id].release()
+                except Exception:
+                    pass
+                del self.captures[cam_id]
+
+        for cam_id in needed_ids:
+            cam_id = str(cam_id)
+            if cam_id in self.captures:
+                continue
+
+            cam = self._camera_by_selected_id(cam_id)
+            if cam is None:
+                raise RuntimeError(f"Camera {cam_id} not found.")
+
+            cap = self._open_capture(cam)
+            if not cap.isOpened():
+                raise RuntimeError(f'Failed to open "{cam["name"]}".')
+
+            self.captures[cam_id] = cap
+
     def _update_frame(self):
-        if not self.captures:
+        if not self.active_camera_ids:
             return
 
         mode = self.app.mode_var.get()
         frames = []
 
-        for cap in self.captures:
+        for cam_id in self.active_camera_ids:
+            cap = self.captures.get(str(cam_id))
+            if cap is None:
+                continue
+
             ok, frame = cap.read()
             if not ok or frame is None:
                 self.preview_job = self.app.after(60, self._update_frame)
                 return
+
             frames.append(frame)
+
+        if not frames:
+            self.preview_job = self.app.after(60, self._update_frame)
+            return
 
         composed = self._compose_frame(frames, mode)
 
@@ -274,13 +307,14 @@ class PreviewService:
                 pass
             self.preview_job = None
 
-        for cap in self.captures:
+        for cap in self.captures.values():
             try:
                 cap.release()
             except Exception:
                 pass
 
-        self.captures = []
+        self.captures = {}
+        self.active_camera_ids = []
         self.preview_image_ref = None
 
         if hasattr(self.app, "preview_canvas"):
