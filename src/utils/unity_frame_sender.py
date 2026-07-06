@@ -6,13 +6,20 @@ import numpy as np
 import pyvirtualcam
 from pyvirtualcam import PixelFormat
 
+try:
+    from constants import get_video_profile
+except ImportError:
+    from src.constants import get_video_profile
 
-OUTPUT_W = 1280
-OUTPUT_H = 720
+
+PROFILE = get_video_profile()
+OUTPUT_W = PROFILE["width"]
+OUTPUT_H = PROFILE["height"]
+OUTPUT_FPS = PROFILE["fps"]
 
 
 class UnityFrameSender:
-    def __init__(self, fps=30, width=OUTPUT_W, height=OUTPUT_H):
+    def __init__(self, fps=OUTPUT_FPS, width=OUTPUT_W, height=OUTPUT_H):
         self.fps = fps
         self.width = width
         self.height = height

@@ -10,9 +10,11 @@ try:
 except ImportError:
     pass
 
+try:
+    from constants import get_video_profile
+except ImportError:
+    from src.constants import get_video_profile
 
-OUTPUT_W = 1280
-OUTPUT_H = 720
 PREVIEW_DELAY_MS = 30
 
 
@@ -25,6 +27,10 @@ class PreviewService:
         self.canvas_image_id = None
         self.frame_forwarder = None
         self.render_local = True
+        self.video_profile = get_video_profile()
+        self.output_w = self.video_profile["width"]
+        self.output_h = self.video_profile["height"]
+        self.output_fps = self.video_profile["fps"]
 
     def set_frame_forwarder(self, forwarder):
         self.frame_forwarder = forwarder
@@ -79,9 +85,9 @@ class PreviewService:
 
             cap = MacAVFoundationCapture(
                 unique_id=camera["unique_id"],
-                width=OUTPUT_W,
-                height=OUTPUT_H,
-                fps=30,
+                width=self.output_w,
+                height=self.output_h,
+                fps=self.output_fps,
             )
             cap.open()
             return cap
@@ -150,16 +156,16 @@ class PreviewService:
             raise RuntimeError("No frames available for preview.")
 
         if mode == "single" or len(frames) == 1:
-            return self._fit_and_pad(frames[0], OUTPUT_W, OUTPUT_H)
+            return self._fit_and_pad(frames[0], self.output_w, self.output_h)
 
         if mode == "sbs" and len(frames) >= 2:
-            left = self._fit_and_pad(frames[0], OUTPUT_W // 2, OUTPUT_H)
-            right = self._fit_and_pad(frames[1], OUTPUT_W // 2, OUTPUT_H)
+            left = self._fit_and_pad(frames[0], self.output_w // 2, self.output_h)
+            right = self._fit_and_pad(frames[1], self.output_w // 2, self.output_h)
             return cv2.hconcat([left, right])
 
         if mode == "stacked" and len(frames) >= 2:
-            top = self._fit_and_pad(frames[0], OUTPUT_W, OUTPUT_H // 2)
-            bottom = self._fit_and_pad(frames[1], OUTPUT_W, OUTPUT_H // 2)
+            top = self._fit_and_pad(frames[0], self.output_w, self.output_h // 2)
+            bottom = self._fit_and_pad(frames[1], self.output_w, self.output_h // 2)
             return cv2.vconcat([top, bottom])
 
         if mode == "pip" and len(frames) >= 2:
@@ -171,10 +177,10 @@ class PreviewService:
         if mode == "quad" and len(frames) >= 4:
             return self._compose_quad_grid(frames[:4])
 
-        return self._fit_and_pad(frames[0], OUTPUT_W, OUTPUT_H)
+        return self._fit_and_pad(frames[0], self.output_w, self.output_h)
 
     def _compose_pip(self, base_frame, inset_frame):
-        base = self._fit_and_pad(base_frame, OUTPUT_W, OUTPUT_H)
+        base = self._fit_and_pad(base_frame, self.output_w, self.output_h)
         base_h, base_w = base.shape[:2]
 
         inset_w = int(base_w * 0.28)
@@ -192,8 +198,8 @@ class PreviewService:
         return base
 
     def _compose_triple_grid(self, frames):
-        cell_w = OUTPUT_W // 2
-        cell_h = OUTPUT_H // 2
+        cell_w = self.output_w // 2
+        cell_h = self.output_h // 2
 
         tl = self._fit_and_pad(frames[0], cell_w, cell_h)
         blank = self._blank_cell(cell_w, cell_h)
@@ -205,8 +211,8 @@ class PreviewService:
         return cv2.vconcat([top_row, bottom_row])
 
     def _compose_quad_grid(self, frames):
-        cell_w = OUTPUT_W // 2
-        cell_h = OUTPUT_H // 2
+        cell_w = self.output_w // 2
+        cell_h = self.output_h // 2
 
         tl = self._fit_and_pad(frames[0], cell_w, cell_h)
         tr = self._fit_and_pad(frames[1], cell_w, cell_h)
