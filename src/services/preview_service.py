@@ -2,6 +2,7 @@
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
+from .threaded_capture import ThreadedCapture
 
 MacAVFoundationCapture = None
 
@@ -23,6 +24,7 @@ class PreviewService:
         self.app = app
         self.captures = {}
         self.active_camera_ids = []
+        self.last_good_frames = {}
         self.preview_job = None
         self.preview_image_ref = None
         self.canvas_image_id = None
@@ -32,9 +34,17 @@ class PreviewService:
         self.output_w = self.video_profile["width"]
         self.output_h = self.video_profile["height"]
         self.output_fps = self.video_profile["fps"]
+        self.failed_frame_counts = {}
+        self.usb_warning_shown = False
 
     def set_frame_forwarder(self, forwarder):
         self.frame_forwarder = forwarder
+
+    def _show_status_warning(self, message):
+        if hasattr(self.app, "set_footer_message"):
+            self.app.set_footer_message(message, is_error=True)
+        else:
+            print(message)
 
     def start(self, selected_camera_ids, mode, render_local=True):
         self._cancel_preview_loop()
@@ -43,6 +53,7 @@ class PreviewService:
             raise RuntimeError("No camera selected.")
 
         self.render_local = render_local
+        self.usb_warning_shown = False
 
         required_counts = {
             "single": 1,
@@ -68,16 +79,40 @@ class PreviewService:
 
         self._update_frame()
 
-    def _open_capture(self, camera):
+    def _is_capture_card(self, camera):
+        text = " ".join([
+            str(camera.get("name", "")),
+            str(camera.get("id", "")),
+            str(camera.get("device_path", "")),
+            str(camera.get("unique_id", "")),
+        ]).lower()
+
+        capture_keywords = [
+            "capture",
+            "hdmi",
+            "usb video",
+            "usb3",
+            "uvc",
+            "534d",
+            "2109",
+        ]
+
+        return any(keyword in text for keyword in capture_keywords)
+
+    def _open_capture(self, camera, mode):
+        capture_w = self.output_w
+        capture_h = self.output_h
+        capture_fps = self.output_fps
+
         if self.app.current_os == "Darwin":
             if MacAVFoundationCapture is None:
                 raise RuntimeError("AVFoundation capture is only available on macOS.")
 
             cap = MacAVFoundationCapture(
                 unique_id=camera["unique_id"],
-                width=self.output_w,
-                height=self.output_h,
-                fps=self.output_fps,
+                width=capture_w,
+                height=capture_h,
+                fps=capture_fps,
             )
             cap.open()
             return cap
@@ -86,18 +121,16 @@ class PreviewService:
             cap = cv2.VideoCapture(int(camera["preview_index"]), cv2.CAP_DSHOW)
 
             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.output_w)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.output_h)
-            cap.set(cv2.CAP_PROP_FPS, self.output_fps)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, capture_w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, capture_h)
+            cap.set(cv2.CAP_PROP_FPS, capture_fps)
 
             actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             actual_fps = cap.get(cv2.CAP_PROP_FPS)
 
             print(
-                f'[CAPTURE] {camera["name"]}: '
-                f'requested={self.output_w}x{self.output_h}@{self.output_fps}, '
-                f'actual={actual_w}x{actual_h}@{actual_fps}'
+                f'requested={capture_w}x{capture_h}@{capture_fps}, '
             )
 
             return cap
@@ -128,6 +161,7 @@ class PreviewService:
                 except Exception:
                     pass
                 del self.captures[cam_id]
+                self.last_good_frames.pop(cam_id, None)
 
         for cam_id in needed_ids:
             cam_id = str(cam_id)
@@ -138,11 +172,14 @@ class PreviewService:
             if cam is None:
                 raise RuntimeError(f"Camera {cam_id} not found.")
 
-            cap = self._open_capture(cam)
+            cap = self._open_capture(cam, self.app.mode_var.get())
             if not cap.isOpened():
                 raise RuntimeError(f'Failed to open "{cam["name"]}".')
 
-            self.captures[cam_id] = cap
+            self.captures[cam_id] = ThreadedCapture(
+                cap,
+                name=cam.get("name", f"Camera {cam_id}")
+            ).start()
 
     def _update_frame(self):
         if not self.active_camera_ids:
@@ -152,16 +189,43 @@ class PreviewService:
         frames = []
 
         for cam_id in self.active_camera_ids:
-            cap = self.captures.get(str(cam_id))
+            cam_id = str(cam_id)
+            cap = self.captures.get(cam_id)
+
             if cap is None:
                 continue
 
             ok, frame = cap.read()
-            if not ok or frame is None:
-                self.preview_job = self.app.after(60, self._update_frame)
-                return
+            if ok and frame is not None:
+                self.failed_frame_counts[cam_id] = 0
+                self.last_good_frames[cam_id] = frame
+                frames.append(frame)
+                continue
 
-            frames.append(frame)
+            self.failed_frame_counts[cam_id] = self.failed_frame_counts.get(cam_id, 0) + 1
+
+            if self.failed_frame_counts[cam_id] >= 30 and not self.usb_warning_shown:
+                self.usb_warning_shown = True
+                self._show_status_warning(
+
+                    "Camera feed unstable. USB bandwidth may be overloaded. "
+
+                    "Try connecting the capture card/cameras to different USB ports."
+
+                )
+
+            if ok and frame is not None:
+                self.last_good_frames[cam_id] = frame
+                frames.append(frame)
+                continue
+
+            # Use previous good frame instead of freezing entire layout
+            if cam_id in self.last_good_frames:
+                frames.append(self.last_good_frames[cam_id])
+                continue
+
+            # Camera not ready yet: use blank frame temporarily
+            frames.append(self._blank_cell(self.output_w, self.output_h))
 
         if not frames:
             self.preview_job = self.app.after(60, self._update_frame)
@@ -300,6 +364,9 @@ class PreviewService:
         return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
     def stop(self):
+        self.last_good_frames = {}
+        self.failed_frame_counts = {}
+        self.usb_warning_shown = False
         if self.preview_job is not None:
             try:
                 self.app.after_cancel(self.preview_job)
