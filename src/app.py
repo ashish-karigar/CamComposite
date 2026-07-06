@@ -1,6 +1,7 @@
 # app.py
 import platform
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk, messagebox
 
 from constants import COLORS, WINDOW
@@ -13,9 +14,11 @@ from ui import (
 )
 
 from services import detect_cameras_for_current_os, PreviewService
-# from src.utils.obs_mac_controller import MacOBSController
-# from src.utils.ndi_frame_sender import NDIFrameSender
-# from src.utils.unity_frame_sender import UnityFrameSender
+
+try:
+    from src.services.windows_engine_service import WindowsEngineService
+except ImportError:
+    WindowsEngineService = None
 
 
 class CamCompositeApp(tk.Tk):
@@ -40,8 +43,9 @@ class CamCompositeApp(tk.Tk):
 
         self.obs_controller = None
 
-        if platform.system() == "Darwin":
+        if self.current_os == "Darwin":
             from src.utils.obs_mac_controller import MacOBSController
+
             self.obs_controller = MacOBSController(
                 scene_name="CamComposite",
                 port=4455,
@@ -63,17 +67,34 @@ class CamCompositeApp(tk.Tk):
         self.after(200, self.detect_cameras)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
         self.preview_service = PreviewService(self)
         self.frame_forwarder = None
+        self.windows_engine_service = None
 
         if self.current_os == "Darwin":
             from src.utils.ndi_frame_sender import NDIFrameSender
-            self.frame_forwarder = NDIFrameSender()
-        elif self.current_os == "Windows":
-            from src.utils.unity_frame_sender import UnityFrameSender
-            self.frame_forwarder = UnityFrameSender()
 
-        self.preview_service.set_frame_forwarder(self.frame_forwarder)
+            self.frame_forwarder = NDIFrameSender()
+            self.preview_service.set_frame_forwarder(self.frame_forwarder)
+
+        elif self.current_os == "Windows":
+            from src.utils.cpp_frame_sender import CppFrameSender
+
+            root = Path(__file__).resolve().parents[1]
+            cpp_frame_path = root / "windows_engine" / "build" / "cpp_latest_frame.jpg"
+
+            self.frame_forwarder = CppFrameSender(cpp_frame_path)
+
+            if WindowsEngineService is not None:
+                self.windows_engine_service = WindowsEngineService()
+
+            # Important: Windows C++ engine produces frames.
+            # Python preview service should NOT send frames to CppFrameSender.
+            self.preview_service.set_frame_forwarder(None)
+
+        else:
+            self.preview_service.set_frame_forwarder(None)
 
     def _selected_camera_objects(self):
         selected = []
@@ -103,7 +124,9 @@ class CamCompositeApp(tk.Tk):
     def set_footer_message(self, message, is_error=False):
         self.footer_message_var.set(message)
         if hasattr(self, "footer_label"):
-            self.footer_label.configure(foreground=(self.colors["error"] if is_error else self.colors["muted"]))
+            self.footer_label.configure(
+                foreground=(self.colors["error"] if is_error else self.colors["muted"])
+            )
 
     def clear_footer_message(self):
         self.set_footer_message("Developed by - @ashish.karigar", is_error=False)
@@ -249,6 +272,8 @@ class CamCompositeApp(tk.Tk):
             print(f"Preview close warning: {e}")
 
         try:
+            if self.windows_engine_service is not None:
+                self.windows_engine_service.stop()
             if self.frame_forwarder is not None:
                 self.frame_forwarder.stop()
         except Exception as e:
@@ -379,16 +404,30 @@ class CamCompositeApp(tk.Tk):
         try:
             self.clear_footer_message()
 
-            if self.frame_forwarder is not None:
-                self.frame_forwarder.start()
+            if self.current_os == "Windows":
+                self.preview_service.stop()
 
-            # Always run the capture/compositor loop so OBS gets frames,
-            # even when local preview is disabled.
-            self.preview_service.start(
-                self.selected_cameras,
-                self.mode_var.get(),
-                render_local=self.preview_var.get(),
-            )
+                if self.windows_engine_service is None:
+                    raise RuntimeError("Windows C++ video engine is not available.")
+
+                self.windows_engine_service.start(
+                    self.mode_var.get(),
+                    self.selected_cameras,
+                )
+
+                if self.frame_forwarder is not None:
+                    self.frame_forwarder.start()
+
+                self.preview_text_var.set("Windows C++ engine running")
+            else:
+                if self.frame_forwarder is not None:
+                    self.frame_forwarder.start()
+
+                self.preview_service.start(
+                    self.selected_cameras,
+                    self.mode_var.get(),
+                    render_local=self.preview_var.get(),
+                )
 
             if self.obs_controller is not None:
                 self.obs_controller.start()
@@ -406,7 +445,6 @@ class CamCompositeApp(tk.Tk):
                 + (f", {self._camera_name_from_id(cam_b)}" if cam_b else "")
                 + f", {self._layout_label(mode)}"
             )
-            self.preview_text_var.set("Preview connected" if self.preview_var.get() else "Local preview disabled")
 
         except Exception as e:
             self.pipeline_running = False
@@ -415,6 +453,8 @@ class CamCompositeApp(tk.Tk):
             except Exception:
                 pass
             try:
+                if self.windows_engine_service is not None:
+                    self.windows_engine_service.stop()
                 if self.frame_forwarder is not None:
                     self.frame_forwarder.stop()
             except Exception:
@@ -424,6 +464,7 @@ class CamCompositeApp(tk.Tk):
                     self.obs_controller.stop()
             except Exception:
                 pass
+
             self.set_footer_message(str(e), is_error=True)
             self.status_var.set("Stopped")
             self.preview_text_var.set("Preview unavailable")
@@ -436,8 +477,11 @@ class CamCompositeApp(tk.Tk):
             self.preview_text_var.set("No cameras selected")
             return
 
+        if self.pipeline_running and self.current_os == "Windows":
+            self.preview_text_var.set("Windows C++ engine running")
+            return
+
         try:
-            # If pipeline is running, keep the sender/compositor in sync with current UI state.
             if self.pipeline_running:
                 self.preview_service.start(
                     self.selected_cameras,
@@ -445,7 +489,6 @@ class CamCompositeApp(tk.Tk):
                     render_local=self.preview_var.get(),
                 )
             else:
-                # Before pipeline start, this is just local preview behavior.
                 self.preview_service.start(
                     self.selected_cameras,
                     self.mode_var.get(),
@@ -457,24 +500,6 @@ class CamCompositeApp(tk.Tk):
             self.preview_service.stop()
             self.preview_text_var.set("Preview unavailable")
             self.set_footer_message(str(e), is_error=True)
-
-    # def _mock_pipeline_start(self):
-    #     mode = self.mode_var.get().strip()
-    #     cam_a = self.selected_cameras[0] if len(self.selected_cameras) >= 1 else ""
-    #     cam_b = self.selected_cameras[1] if len(self.selected_cameras) >= 2 else ""
-    #     preview = self.preview_var.get()
-    #     hide_obs = self.auto_hide_obs_var.get()
-    #
-    #     self.after(
-    #         0,
-    #         lambda: self.status_var.set(
-    #             f"Running: {self._camera_name_from_id(cam_a)}"
-    #             + (f", {self._camera_name_from_id(cam_b)}" if cam_b else "")
-    #             + f", {self._layout_label(mode)}"
-    #         ),
-    #     )
-    #     self.after(0, lambda: self.preview_text_var.set("Preview connected"))
-    #     _ = preview, hide_obs
 
     def stop_pipeline(self):
         if not self.pipeline_running:
@@ -488,6 +513,9 @@ class CamCompositeApp(tk.Tk):
             print(f"OBS stop warning: {e}")
 
         self.preview_service.stop()
+
+        if self.windows_engine_service is not None:
+            self.windows_engine_service.stop()
 
         if self.frame_forwarder is not None:
             self.frame_forwarder.stop()
