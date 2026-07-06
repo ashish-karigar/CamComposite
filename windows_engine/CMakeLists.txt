@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 project(CamCompositeWindowsEngine LANGUAGES CXX)
 
+find_package(OpenCV REQUIRED)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -16,7 +18,5 @@ target_link_libraries(camera_discovery
 add_executable(camera_capture_test camera_capture_test.cpp)
 
 target_link_libraries(camera_capture_test
-    ole32
-    oleaut32
-    strmiids
+    ${OpenCV_LIBS}
 )
