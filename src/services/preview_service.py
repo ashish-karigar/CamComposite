@@ -3,7 +3,12 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-from .mac_avfoundation_capture import MacAVFoundationCapture
+MacAVFoundationCapture = None
+
+try:
+    from .mac_avfoundation_capture import MacAVFoundationCapture
+except ImportError:
+    pass
 
 
 OUTPUT_W = 1280
@@ -69,6 +74,9 @@ class PreviewService:
 
     def _open_capture(self, camera):
         if self.app.current_os == "Darwin":
+            if MacAVFoundationCapture is None:
+                raise RuntimeError("AVFoundation capture is only available on macOS.")
+
             cap = MacAVFoundationCapture(
                 unique_id=camera["unique_id"],
                 width=OUTPUT_W,
