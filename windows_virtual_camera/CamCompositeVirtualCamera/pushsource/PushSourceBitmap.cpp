@@ -1,25 +1,82 @@
 //------------------------------------------------------------------------------
 // File: PushSourceBitmap.cpp
 //
-// Desc: Cam-Composite DirectShow virtual camera test source.
+// Desc: Cam-Composite DirectShow virtual camera source.
+//       Reads YUY2 frames from the CamComposite shared memory buffer.
 //------------------------------------------------------------------------------
 
 #include <streams.h>
 
 #include "PushSource.h"
 #include "PushGuids.h"
+#include "../../shared/CamCompositeSharedFrame.h"
 
-static const LONG CAMCOMP_WIDTH = 1920;
-static const LONG CAMCOMP_HEIGHT = 1080;
-static const LONG CAMCOMP_BYTES_PER_PIXEL = 2;
-static const LONG CAMCOMP_IMAGE_SIZE = CAMCOMP_WIDTH * CAMCOMP_HEIGHT * CAMCOMP_BYTES_PER_PIXEL;
 static const REFERENCE_TIME CAMCOMP_FRAME_TIME = 333333; // ~30 FPS
+
+static HANDLE g_hSharedMap = NULL;
+static CamCompositeSharedFrame* g_sharedFrame = NULL;
 
 const AMOVIESETUP_MEDIATYPE sudOpPinTypes =
 {
     &MEDIATYPE_Video,
-    &MEDIASUBTYPE_RGB24
+    &MEDIASUBTYPE_YUY2
 };
+
+static void CloseSharedFrame()
+{
+    if (g_sharedFrame)
+    {
+        UnmapViewOfFile(g_sharedFrame);
+        g_sharedFrame = NULL;
+    }
+
+    if (g_hSharedMap)
+    {
+        CloseHandle(g_hSharedMap);
+        g_hSharedMap = NULL;
+    }
+}
+
+static bool EnsureSharedFrameOpen()
+{
+    if (g_sharedFrame != NULL)
+    {
+        return true;
+    }
+
+    g_hSharedMap = OpenFileMappingW(
+        FILE_MAP_READ,
+        FALSE,
+        CAMCOMP_SHARED_MEMORY_NAME
+    );
+
+    if (!g_hSharedMap)
+    {
+        OutputDebugString(TEXT("[Cam-Composite] OpenFileMapping failed\n"));
+        return false;
+    }
+
+    g_sharedFrame = static_cast<CamCompositeSharedFrame*>(
+        MapViewOfFile(
+            g_hSharedMap,
+            FILE_MAP_READ,
+            0,
+            0,
+            sizeof(CamCompositeSharedFrame)
+        )
+    );
+
+    if (!g_sharedFrame)
+    {
+        OutputDebugString(TEXT("[Cam-Composite] MapViewOfFile failed\n"));
+        CloseHandle(g_hSharedMap);
+        g_hSharedMap = NULL;
+        return false;
+    }
+
+    OutputDebugString(TEXT("[Cam-Composite] Shared frame opened\n"));
+    return true;
+}
 
 
 /**********************************************
@@ -40,10 +97,10 @@ CPushPinBitmap::CPushPinBitmap(HRESULT *phr, CSource *pFilter)
         m_iFrameNumber(0),
         m_rtFrameLength(CAMCOMP_FRAME_TIME)
 {
-
     OutputDebugString(TEXT("[Cam-Composite] Constructor loaded\n"));
 
-    if (phr) {
+    if (phr)
+    {
         *phr = S_OK;
     }
 }
@@ -53,20 +110,24 @@ CPushPinBitmap::~CPushPinBitmap()
 {
     DbgLog((LOG_TRACE, 3, TEXT("Frames written %d"), m_iFrameNumber));
 
-    if (m_pFile) {
+    if (m_pFile)
+    {
         delete [] m_pFile;
         m_pFile = NULL;
     }
 
-    if (m_hFile != INVALID_HANDLE_VALUE) {
+    if (m_hFile != INVALID_HANDLE_VALUE)
+    {
         CloseHandle(m_hFile);
         m_hFile = INVALID_HANDLE_VALUE;
     }
 }
 
+
 STDMETHODIMP CPushPinBitmap::NonDelegatingQueryInterface(REFIID riid, void **ppv)
 {
-    if (riid == IID_IKsPropertySet) {
+    if (riid == IID_IKsPropertySet)
+    {
         return GetInterface((IKsPropertySet *)this, ppv);
     }
 
@@ -97,16 +158,20 @@ STDMETHODIMP CPushPinBitmap::Get(
     DWORD *pcbReturned
 )
 {
-    if (guidPropSet == AMPROPSETID_Pin && dwPropID == AMPROPERTY_PIN_CATEGORY) {
-        if (pcbReturned) {
+    if (guidPropSet == AMPROPSETID_Pin && dwPropID == AMPROPERTY_PIN_CATEGORY)
+    {
+        if (pcbReturned)
+        {
             *pcbReturned = sizeof(GUID);
         }
 
-        if (pPropData == NULL) {
+        if (pPropData == NULL)
+        {
             return S_OK;
         }
 
-        if (cbPropData < sizeof(GUID)) {
+        if (cbPropData < sizeof(GUID))
+        {
             return E_UNEXPECTED;
         }
 
@@ -124,8 +189,10 @@ STDMETHODIMP CPushPinBitmap::QuerySupported(
     DWORD *pTypeSupport
 )
 {
-    if (guidPropSet == AMPROPSETID_Pin && dwPropID == AMPROPERTY_PIN_CATEGORY) {
-        if (pTypeSupport) {
+    if (guidPropSet == AMPROPSETID_Pin && dwPropID == AMPROPERTY_PIN_CATEGORY)
+    {
+        if (pTypeSupport)
+        {
             *pTypeSupport = KSPROPERTY_SUPPORT_GET;
         }
 
@@ -143,7 +210,8 @@ HRESULT CPushPinBitmap::GetMediaType(CMediaType *pMediaType)
     CheckPointer(pMediaType, E_POINTER);
 
     VIDEOINFOHEADER *pvi = (VIDEOINFOHEADER *)pMediaType->AllocFormatBuffer(sizeof(VIDEOINFOHEADER));
-    if (pvi == NULL) {
+    if (pvi == NULL)
+    {
         return E_OUTOFMEMORY;
     }
 
@@ -157,7 +225,7 @@ HRESULT CPushPinBitmap::GetMediaType(CMediaType *pMediaType)
     pvi->bmiHeader.biPlanes = 1;
     pvi->bmiHeader.biBitCount = 16;
     pvi->bmiHeader.biCompression = MAKEFOURCC('Y', 'U', 'Y', '2');
-    pvi->bmiHeader.biSizeImage = CAMCOMP_IMAGE_SIZE;
+    pvi->bmiHeader.biSizeImage = CAMCOMP_FRAME_SIZE;
 
     SetRectEmpty(&(pvi->rcSource));
     SetRectEmpty(&(pvi->rcTarget));
@@ -166,7 +234,7 @@ HRESULT CPushPinBitmap::GetMediaType(CMediaType *pMediaType)
     pMediaType->SetSubtype(&MEDIASUBTYPE_YUY2);
     pMediaType->SetFormatType(&FORMAT_VideoInfo);
     pMediaType->SetTemporalCompression(FALSE);
-    pMediaType->SetSampleSize(CAMCOMP_IMAGE_SIZE);
+    pMediaType->SetSampleSize(CAMCOMP_FRAME_SIZE);
 
     return S_OK;
 }
@@ -179,17 +247,19 @@ HRESULT CPushPinBitmap::DecideBufferSize(IMemAllocator *pAlloc, ALLOCATOR_PROPER
     CheckPointer(pAlloc, E_POINTER);
     CheckPointer(pRequest, E_POINTER);
 
-    pRequest->cBuffers = 1;
-    pRequest->cbBuffer = CAMCOMP_IMAGE_SIZE;
+    pRequest->cBuffers = 2;
+    pRequest->cbBuffer = CAMCOMP_FRAME_SIZE;
 
     ALLOCATOR_PROPERTIES Actual;
     HRESULT hr = pAlloc->SetProperties(pRequest, &Actual);
 
-    if (FAILED(hr)) {
+    if (FAILED(hr))
+    {
         return hr;
     }
 
-    if (Actual.cbBuffer < CAMCOMP_IMAGE_SIZE) {
+    if (Actual.cbBuffer < CAMCOMP_FRAME_SIZE)
+    {
         return E_FAIL;
     }
 
@@ -199,71 +269,92 @@ HRESULT CPushPinBitmap::DecideBufferSize(IMemAllocator *pAlloc, ALLOCATOR_PROPER
 
 HRESULT CPushPinBitmap::FillBuffer(IMediaSample *pSample)
 {
-    OutputDebugString(TEXT("[Cam-Composite] FillBuffer called\n"));
-
     BYTE *pData = NULL;
     long cbData = 0;
 
     CheckPointer(pSample, E_POINTER);
 
     HRESULT hr = pSample->GetPointer(&pData);
-    if (FAILED(hr)) {
+    if (FAILED(hr))
+    {
         return hr;
     }
 
     cbData = pSample->GetSize();
-    if (cbData < CAMCOMP_IMAGE_SIZE) {
+    if (cbData < CAMCOMP_FRAME_SIZE)
+    {
         return E_FAIL;
     }
 
-    const int squareSize = 120;
-    const int squareX = (m_iFrameNumber * 12) % (CAMCOMP_WIDTH - squareSize);
-    const int squareY = CAMCOMP_HEIGHT / 2 - squareSize / 2;
+    bool copiedFrame = false;
 
-    for (LONG y = 0; y < CAMCOMP_HEIGHT; y++) {
-        BYTE *row = pData + (y * CAMCOMP_WIDTH * CAMCOMP_BYTES_PER_PIXEL);
+    if (EnsureSharedFrameOpen())
+    {
+        if (
+            g_sharedFrame->magic == CAMCOMP_MAGIC &&
+            g_sharedFrame->version == CAMCOMP_VERSION &&
+            g_sharedFrame->width == CAMCOMP_WIDTH &&
+            g_sharedFrame->height == CAMCOMP_HEIGHT &&
+            g_sharedFrame->bytesPerPixel == CAMCOMP_BYTES_PER_PIXEL &&
+            g_sharedFrame->frameSize == CAMCOMP_FRAME_SIZE &&
+            g_sharedFrame->bufferCount == CAMCOMP_BUFFER_COUNT
+        )
+        {
+            LONG bufferIndex = g_sharedFrame->readableBufferIndex;
 
-        for (LONG x = 0; x < CAMCOMP_WIDTH; x += 2) {
-            BYTE y0 = 80;
-            BYTE y1 = 80;
-            BYTE u = 128;
-            BYTE v = 128;
+            if (bufferIndex >= 0 && bufferIndex < CAMCOMP_BUFFER_COUNT)
+            {
+                LONG beforeFrameIndex = g_sharedFrame->frameIndex;
 
-            int bar = (x * 8) / CAMCOMP_WIDTH;
+                MemoryBarrier();
 
-            switch (bar) {
-                case 0: y0 = y1 = 235; u = 128; v = 128; break; // white
-                case 1: y0 = y1 = 210; u = 16;  v = 146; break; // yellow-ish
-                case 2: y0 = y1 = 170; u = 166; v = 16;  break; // cyan-ish
-                case 3: y0 = y1 = 145; u = 54;  v = 34;  break; // green-ish
-                case 4: y0 = y1 = 105; u = 202; v = 222; break; // magenta-ish
-                case 5: y0 = y1 = 80;  u = 90;  v = 240; break; // red-ish
-                case 6: y0 = y1 = 41;  u = 240; v = 110; break; // blue-ish
-                default: y0 = y1 = 30; u = 128; v = 128; break;
+                CopyMemory(
+                    pData,
+                    g_sharedFrame->buffers[bufferIndex],
+                    CAMCOMP_FRAME_SIZE
+                );
+
+                MemoryBarrier();
+
+                LONG afterFrameIndex = g_sharedFrame->frameIndex;
+                LONG afterBufferIndex = g_sharedFrame->readableBufferIndex;
+
+                if (
+                    beforeFrameIndex == afterFrameIndex &&
+                    bufferIndex == afterBufferIndex
+                )
+                {
+                    copiedFrame = true;
+                }
+                else
+                {
+                    bufferIndex = g_sharedFrame->readableBufferIndex;
+
+                    if (bufferIndex >= 0 && bufferIndex < CAMCOMP_BUFFER_COUNT)
+                    {
+                        CopyMemory(
+                            pData,
+                            g_sharedFrame->buffers[bufferIndex],
+                            CAMCOMP_FRAME_SIZE
+                        );
+
+                        copiedFrame = true;
+                    }
+                }
             }
-
-            if (
-                x >= squareX && x < squareX + squareSize &&
-                y >= squareY && y < squareY + squareSize
-            ) {
-                y0 = 235;
-                y1 = 235;
-                u = 128;
-                v = 128;
-            }
-
-            row[x * 2 + 0] = y0;
-            row[x * 2 + 1] = u;
-            row[x * 2 + 2] = y1;
-            row[x * 2 + 3] = v;
         }
+    }
+
+    if (!copiedFrame)
+    {
+        ZeroMemory(pData, CAMCOMP_FRAME_SIZE);
     }
 
     REFERENCE_TIME rtStart = m_iFrameNumber * m_rtFrameLength;
     REFERENCE_TIME rtStop = rtStart + m_rtFrameLength;
 
     pSample->SetTime(&rtStart, &rtStop);
-    pSample->SetActualDataLength(CAMCOMP_IMAGE_SIZE);
+    pSample->SetActualDataLength(CAMCOMP_FRAME_SIZE);
     pSample->SetSyncPoint(TRUE);
 
     m_iFrameNumber++;
@@ -285,10 +376,14 @@ CPushSourceBitmap::CPushSourceBitmap(IUnknown *pUnk, HRESULT *phr)
 
     m_pPin = new CPushPinBitmap(phr, this);
 
-    if (phr) {
-        if (m_pPin == NULL) {
+    if (phr)
+    {
+        if (m_pPin == NULL)
+        {
             *phr = E_OUTOFMEMORY;
-        } else {
+        }
+        else
+        {
             *phr = S_OK;
         }
     }
@@ -299,6 +394,8 @@ CPushSourceBitmap::~CPushSourceBitmap()
 {
     delete m_pPin;
     m_pPin = NULL;
+
+    CloseSharedFrame();
 }
 
 
@@ -308,10 +405,14 @@ CUnknown * WINAPI CPushSourceBitmap::CreateInstance(IUnknown *pUnk, HRESULT *phr
 
     CPushSourceBitmap *pNewFilter = new CPushSourceBitmap(pUnk, phr);
 
-    if (phr) {
-        if (pNewFilter == NULL) {
+    if (phr)
+    {
+        if (pNewFilter == NULL)
+        {
             *phr = E_OUTOFMEMORY;
-        } else {
+        }
+        else
+        {
             *phr = S_OK;
         }
     }

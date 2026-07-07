@@ -1,23 +1,208 @@
+#define NOMINMAX
+#include <windows.h>
+
 #include <opencv2/opencv.hpp>
+
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
-#include <filesystem>
+
+#include "../windows_virtual_camera/shared/CamCompositeSharedFrame.h"
+
+#ifdef min
+#undef min
+#endif
+
+#ifdef max
+#undef max
+#endif
 
 static constexpr int OUTPUT_W = 1920;
 static constexpr int OUTPUT_H = 1080;
 static constexpr int FPS = 30;
 
-class CameraReader {
+class SharedFrameWriter
+{
+private:
+    HANDLE hMap = NULL;
+    CamCompositeSharedFrame* shared = nullptr;
+
+    static BYTE clampByte(int value)
+    {
+        if (value < 0) return 0;
+        if (value > 255) return 255;
+        return static_cast<BYTE>(value);
+    }
+
+    static void bgrToYuv(BYTE b, BYTE g, BYTE r, BYTE& y, BYTE& u, BYTE& v)
+    {
+        int yy = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+        int uu = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+        int vv = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+
+        y = clampByte(yy);
+        u = clampByte(uu);
+        v = clampByte(vv);
+    }
+
+public:
+    bool open()
+    {
+        hMap = CreateFileMappingW(
+            INVALID_HANDLE_VALUE,
+            NULL,
+            PAGE_READWRITE,
+            0,
+            sizeof(CamCompositeSharedFrame),
+            CAMCOMP_SHARED_MEMORY_NAME
+        );
+
+        if (!hMap)
+        {
+            std::cerr << "CreateFileMapping failed: " << GetLastError() << "\n";
+            return false;
+        }
+
+        shared = static_cast<CamCompositeSharedFrame*>(
+            MapViewOfFile(
+                hMap,
+                FILE_MAP_ALL_ACCESS,
+                0,
+                0,
+                sizeof(CamCompositeSharedFrame)
+            )
+        );
+
+        if (!shared)
+        {
+            std::cerr << "MapViewOfFile failed: " << GetLastError() << "\n";
+            CloseHandle(hMap);
+            hMap = NULL;
+            return false;
+        }
+
+        ZeroMemory(shared, sizeof(CamCompositeSharedFrame));
+
+        shared->magic = CAMCOMP_MAGIC;
+        shared->version = CAMCOMP_VERSION;
+        shared->width = CAMCOMP_WIDTH;
+        shared->height = CAMCOMP_HEIGHT;
+        shared->bytesPerPixel = CAMCOMP_BYTES_PER_PIXEL;
+        shared->frameSize = CAMCOMP_FRAME_SIZE;
+        shared->bufferCount = CAMCOMP_BUFFER_COUNT;
+        shared->writing = 0;
+        shared->readableBufferIndex = 0;
+        shared->frameIndex = 0;
+
+        std::cout << "Shared frame buffer ready with double buffering\n";
+        return true;
+    }
+
+    void writeBgrFrame(const cv::Mat& bgrFrame)
+    {
+        if (!shared || bgrFrame.empty())
+            return;
+
+        cv::Mat frame;
+
+        if (bgrFrame.cols != CAMCOMP_WIDTH || bgrFrame.rows != CAMCOMP_HEIGHT)
+        {
+            cv::resize(bgrFrame, frame, cv::Size(CAMCOMP_WIDTH, CAMCOMP_HEIGHT), 0, 0, cv::INTER_AREA);
+        }
+        else
+        {
+            frame = bgrFrame;
+        }
+
+        if (!frame.isContinuous())
+        {
+            frame = frame.clone();
+        }
+
+        LONG currentReadable = shared->readableBufferIndex;
+
+        if (currentReadable < 0 || currentReadable >= CAMCOMP_BUFFER_COUNT)
+        {
+            currentReadable = 0;
+        }
+
+        LONG writeBufferIndex = 1 - currentReadable;
+
+        shared->writing = 1;
+        MemoryBarrier();
+
+        BYTE* dst = shared->buffers[writeBufferIndex];
+
+        for (int y = 0; y < CAMCOMP_HEIGHT; y++)
+        {
+            const BYTE* row = frame.ptr<BYTE>(y);
+
+            for (int x = 0; x < CAMCOMP_WIDTH; x += 2)
+            {
+                const BYTE* p0 = row + x * 3;
+                const BYTE* p1 = row + (x + 1) * 3;
+
+                BYTE y0, u0, v0;
+                BYTE y1, u1, v1;
+
+                bgrToYuv(p0[0], p0[1], p0[2], y0, u0, v0);
+                bgrToYuv(p1[0], p1[1], p1[2], y1, u1, v1);
+
+                BYTE u = static_cast<BYTE>((static_cast<int>(u0) + static_cast<int>(u1)) / 2);
+                BYTE v = static_cast<BYTE>((static_cast<int>(v0) + static_cast<int>(v1)) / 2);
+
+                int offset = (y * CAMCOMP_WIDTH + x) * 2;
+
+                dst[offset + 0] = y0;
+                dst[offset + 1] = u;
+                dst[offset + 2] = y1;
+                dst[offset + 3] = v;
+            }
+        }
+
+        MemoryBarrier();
+
+        shared->readableBufferIndex = writeBufferIndex;
+        shared->frameIndex++;
+        shared->writing = 0;
+    }
+
+    void close()
+    {
+        if (shared)
+        {
+            UnmapViewOfFile(shared);
+            shared = nullptr;
+        }
+
+        if (hMap)
+        {
+            CloseHandle(hMap);
+            hMap = NULL;
+        }
+    }
+
+    ~SharedFrameWriter()
+    {
+        close();
+    }
+};
+
+class CameraReader
+{
 public:
     CameraReader(int index) : cameraIndex(index) {}
 
-    bool start() {
-        if (!openCamera()) {
+    bool start()
+    {
+        if (!openCamera())
+        {
             std::cerr << "Failed to open camera index " << cameraIndex << "\n";
             return false;
         }
@@ -27,10 +212,12 @@ public:
         return true;
     }
 
-    bool readLatest(cv::Mat& out) {
+    bool readLatest(cv::Mat& out)
+    {
         std::lock_guard<std::mutex> lock(frameMutex);
 
-        if (latestFrame.empty()) {
+        if (latestFrame.empty())
+        {
             return false;
         }
 
@@ -38,19 +225,23 @@ public:
         return true;
     }
 
-    void stop() {
+    void stop()
+    {
         running = false;
 
-        if (worker.joinable()) {
+        if (worker.joinable())
+        {
             worker.join();
         }
 
-        if (cap.isOpened()) {
+        if (cap.isOpened())
+        {
             cap.release();
         }
     }
 
-    ~CameraReader() {
+    ~CameraReader()
+    {
         stop();
     }
 
@@ -63,8 +254,10 @@ private:
     cv::Mat latestFrame;
     int failedReads = 0;
 
-    bool openCamera() {
-        if (cap.isOpened()) {
+    bool openCamera()
+    {
+        if (cap.isOpened())
+        {
             cap.release();
         }
 
@@ -74,7 +267,8 @@ private:
 
         cap.open(cameraIndex, cv::CAP_DSHOW);
 
-        if (!cap.isOpened()) {
+        if (!cap.isOpened())
+        {
             return false;
         }
 
@@ -91,20 +285,26 @@ private:
         return true;
     }
 
-    void loop() {
-        while (running) {
+    void loop()
+    {
+        while (running)
+        {
             cv::Mat frame;
             bool ok = cap.read(frame);
 
-            if (ok && !frame.empty()) {
+            if (ok && !frame.empty())
+            {
                 failedReads = 0;
 
                 std::lock_guard<std::mutex> lock(frameMutex);
                 latestFrame = frame.clone();
-            } else {
+            }
+            else
+            {
                 failedReads++;
 
-                if (failedReads >= 60) {
+                if (failedReads >= 60)
+                {
                     std::cerr << "Camera " << cameraIndex << " stalled. Reopening...\n";
                     openCamera();
                     failedReads = 0;
@@ -116,12 +316,15 @@ private:
     }
 };
 
-cv::Mat blank(int w, int h) {
+cv::Mat blank(int w, int h)
+{
     return cv::Mat::zeros(h, w, CV_8UC3);
 }
 
-cv::Mat fitAndPad(const cv::Mat& frame, int boxW, int boxH) {
-    if (frame.empty()) {
+cv::Mat fitAndPad(const cv::Mat& frame, int boxW, int boxH)
+{
+    if (frame.empty())
+    {
         return blank(boxW, boxH);
     }
 
@@ -145,16 +348,20 @@ cv::Mat fitAndPad(const cv::Mat& frame, int boxW, int boxH) {
     return canvas;
 }
 
-cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mode) {
-    if (frames.empty()) {
+cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mode)
+{
+    if (frames.empty())
+    {
         return blank(OUTPUT_W, OUTPUT_H);
     }
 
-    if (mode == "single" || frames.size() == 1) {
+    if (mode == "single" || frames.size() == 1)
+    {
         return fitAndPad(frames[0], OUTPUT_W, OUTPUT_H);
     }
 
-    if ((mode == "sbs" || mode == "side-by-side") && frames.size() >= 2) {
+    if ((mode == "sbs" || mode == "side-by-side") && frames.size() >= 2)
+    {
         cv::Mat left = fitAndPad(frames[0], OUTPUT_W / 2, OUTPUT_H);
         cv::Mat right = fitAndPad(frames[1], OUTPUT_W / 2, OUTPUT_H);
 
@@ -163,7 +370,8 @@ cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mod
         return output;
     }
 
-    if (mode == "stacked" && frames.size() >= 2) {
+    if (mode == "stacked" && frames.size() >= 2)
+    {
         cv::Mat top = fitAndPad(frames[0], OUTPUT_W, OUTPUT_H / 2);
         cv::Mat bottom = fitAndPad(frames[1], OUTPUT_W, OUTPUT_H / 2);
 
@@ -172,7 +380,8 @@ cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mod
         return output;
     }
 
-    if (mode == "triple" && frames.size() >= 3) {
+    if (mode == "triple" && frames.size() >= 3)
+    {
         int cellW = OUTPUT_W / 2;
         int cellH = OUTPUT_H / 2;
 
@@ -192,7 +401,8 @@ cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mod
         return output;
     }
 
-    if (mode == "quad" && frames.size() >= 4) {
+    if (mode == "quad" && frames.size() >= 4)
+    {
         int cellW = OUTPUT_W / 2;
         int cellH = OUTPUT_H / 2;
 
@@ -215,8 +425,10 @@ cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mod
     return fitAndPad(frames[0], OUTPUT_W, OUTPUT_H);
 }
 
-bool isNonBlack(const cv::Mat& frame) {
-    if (frame.empty()) return false;
+bool isNonBlack(const cv::Mat& frame)
+{
+    if (frame.empty())
+        return false;
 
     cv::Scalar meanValue = cv::mean(frame);
     double brightness = meanValue[0] + meanValue[1] + meanValue[2];
@@ -224,8 +436,10 @@ bool isNonBlack(const cv::Mat& frame) {
     return brightness > 15.0;
 }
 
-int main(int argc, char** argv) {
-    if (argc < 3) {
+int main(int argc, char** argv)
+{
+    if (argc < 3)
+    {
         std::cerr << "Usage: video_engine.exe <mode> <camera_index_1> [camera_index_2] ...\n";
         std::cerr << "Example: video_engine.exe quad 0 1 2 3\n";
         return 1;
@@ -234,95 +448,75 @@ int main(int argc, char** argv) {
     std::string mode = argv[1];
 
     std::vector<int> cameraIndexes;
-    for (int i = 2; i < argc; i++) {
+    for (int i = 2; i < argc; i++)
+    {
         cameraIndexes.push_back(std::stoi(argv[i]));
+    }
+
+    SharedFrameWriter sharedWriter;
+    if (!sharedWriter.open())
+    {
+        std::cerr << "Failed to open shared frame writer\n";
+        return 3;
     }
 
     std::vector<std::unique_ptr<CameraReader>> readers;
 
-    for (int index : cameraIndexes) {
+    for (int index : cameraIndexes)
+    {
         auto reader = std::make_unique<CameraReader>(index);
-        if (!reader->start()) {
+
+        if (!reader->start())
+        {
             std::cerr << "Warning: camera " << index << " failed to start. Using black tile.\n";
         }
+
         readers.push_back(std::move(reader));
     }
 
     std::cout << "Started " << readers.size() << " camera readers. Mode: " << mode << "\n";
+    std::cout << "Running continuous compositor. Press Ctrl+C to stop.\n";
 
-    cv::Mat finalOutput;
-    bool saved = false;
+    int frameCounter = 0;
 
-    for (int attempt = 0; attempt < 2000; attempt++) {
+    while (true)
+    {
         std::vector<cv::Mat> frames;
         int validFrameCount = 0;
 
-        for (auto& reader : readers) {
+        for (auto& reader : readers)
+        {
             cv::Mat frame;
 
-            if (reader->readLatest(frame) && isNonBlack(frame)) {
+            if (reader->readLatest(frame) && isNonBlack(frame))
+            {
                 frames.push_back(frame);
                 validFrameCount++;
-            } else {
+            }
+            else
+            {
                 frames.push_back(blank(OUTPUT_W, OUTPUT_H));
             }
         }
 
-        finalOutput = composeFrames(frames, mode);
+        cv::Mat finalOutput = composeFrames(frames, mode);
+        sharedWriter.writeBgrFrame(finalOutput);
 
-        if (validFrameCount == static_cast<int>(readers.size())) {
-            std::cout << "Running continuous compositor. Press Ctrl+C to stop.\n";
+        frameCounter++;
 
-            int frameCounter = 0;
-
-            while (true) {
-                std::vector<cv::Mat> frames;
-
-                for (auto& reader : readers) {
-                    cv::Mat frame;
-
-                    if (reader->readLatest(frame) && isNonBlack(frame)) {
-                        frames.push_back(frame);
-                    } else {
-                        frames.push_back(blank(OUTPUT_W, OUTPUT_H));
-                    }
-                }
-
-                finalOutput = composeFrames(frames, mode);
-
-                std::vector<int> jpgParams = {
-                    cv::IMWRITE_JPEG_QUALITY, 95
-                };
-
-                cv::imwrite("cpp_latest_frame_tmp.jpg", finalOutput, jpgParams);
-
-                try {
-                    std::filesystem::remove("cpp_latest_frame.jpg");
-                    std::filesystem::rename("cpp_latest_frame_tmp.jpg", "cpp_latest_frame.jpg");
-                } catch (const std::exception& e) {
-                    std::cerr << "Frame swap warning: " << e.what() << "\n";
-                }
-
-                frameCounter++;
-                if (frameCounter % 30 == 0) {
-                    std::cout << "Wrote cpp_latest_frame.jpg\n";
-                }
-
-                std::this_thread::sleep_for(std::chrono::milliseconds(66));
-            }
-        }
-
-        if (attempt % 100 == 0) {
-            std::cout << "Waiting for cameras: "
+        if (frameCounter % 30 == 0)
+        {
+            std::cout << "Wrote shared frame. Cameras ready: "
                       << validFrameCount << "/"
                       << readers.size()
-                      << " ready\n";
+                      << "\n";
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000 / FPS));
     }
 
-    for (auto& reader : readers) {
+    for (auto& reader : readers)
+    {
         reader->stop();
     }
 
