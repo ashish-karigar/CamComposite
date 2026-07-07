@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -26,6 +27,8 @@
 static constexpr int OUTPUT_W = 1920;
 static constexpr int OUTPUT_H = 1080;
 static constexpr int FPS = 30;
+
+static const std::string CONTROL_FILE_PATH = "runtime/control.txt";
 
 class SharedFrameWriter
 {
@@ -360,6 +363,30 @@ cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mod
         return fitAndPad(frames[0], OUTPUT_W, OUTPUT_H);
     }
 
+    if (mode == "pip" && frames.size() >= 2)
+    {
+        cv::Mat output = fitAndPad(frames[0], OUTPUT_W, OUTPUT_H);
+
+        int pipW = OUTPUT_W / 4;
+        int pipH = OUTPUT_H / 4;
+
+        cv::Mat pip = fitAndPad(frames[1], pipW, pipH);
+
+        int margin = 40;
+        int x = OUTPUT_W - pipW - margin;
+        int y = OUTPUT_H - pipH - margin;
+
+        cv::rectangle(
+            output,
+            cv::Rect(x - 4, y - 4, pipW + 8, pipH + 8),
+            cv::Scalar(255, 255, 255),
+            cv::FILLED
+        );
+
+        pip.copyTo(output(cv::Rect(x, y, pipW, pipH)));
+        return output;
+    }
+
     if ((mode == "sbs" || mode == "side-by-side") && frames.size() >= 2)
     {
         cv::Mat left = fitAndPad(frames[0], OUTPUT_W / 2, OUTPUT_H);
@@ -436,6 +463,47 @@ bool isNonBlack(const cv::Mat& frame)
     return brightness > 15.0;
 }
 
+std::string trim(const std::string& value)
+{
+    size_t start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos)
+    {
+        return "";
+    }
+
+    size_t end = value.find_last_not_of(" \t\r\n");
+    return value.substr(start, end - start + 1);
+}
+
+std::string readModeFromControlFile(const std::string& fallbackMode)
+{
+    std::ifstream file(CONTROL_FILE_PATH);
+
+    if (!file.is_open())
+    {
+        return fallbackMode;
+    }
+
+    std::string line;
+
+    while (std::getline(file, line))
+    {
+        line = trim(line);
+
+        if (line.rfind("mode=", 0) == 0)
+        {
+            std::string mode = trim(line.substr(5));
+
+            if (!mode.empty())
+            {
+                return mode;
+            }
+        }
+    }
+
+    return fallbackMode;
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 3)
@@ -446,6 +514,7 @@ int main(int argc, char** argv)
     }
 
     std::string mode = argv[1];
+    std::string activeMode = mode;
 
     std::vector<int> cameraIndexes;
     for (int i = 2; i < argc; i++)
@@ -474,13 +543,24 @@ int main(int argc, char** argv)
         readers.push_back(std::move(reader));
     }
 
-    std::cout << "Started " << readers.size() << " camera readers. Mode: " << mode << "\n";
+    std::cout << "Started " << readers.size() << " camera readers. Mode: " << activeMode << "\n";
     std::cout << "Running continuous compositor. Press Ctrl+C to stop.\n";
 
     int frameCounter = 0;
 
     while (true)
     {
+        if (frameCounter % 5 == 0)
+        {
+            std::string requestedMode = readModeFromControlFile(activeMode);
+
+            if (!requestedMode.empty() && requestedMode != activeMode)
+            {
+                activeMode = requestedMode;
+                std::cout << "Layout mode changed to: " << activeMode << "\n";
+            }
+        }
+
         std::vector<cv::Mat> frames;
         int validFrameCount = 0;
 
@@ -499,7 +579,7 @@ int main(int argc, char** argv)
             }
         }
 
-        cv::Mat finalOutput = composeFrames(frames, mode);
+        cv::Mat finalOutput = composeFrames(frames, activeMode);
         sharedWriter.writeBgrFrame(finalOutput);
 
         frameCounter++;
@@ -509,6 +589,8 @@ int main(int argc, char** argv)
             std::cout << "Wrote shared frame. Cameras ready: "
                       << validFrameCount << "/"
                       << readers.size()
+                      << ". Mode: "
+                      << activeMode
                       << "\n";
         }
 
