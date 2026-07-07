@@ -14,16 +14,6 @@ from ui import (
 
 from services import detect_cameras_for_current_os, PreviewService
 
-try:
-    from src.services.windows_engine_service import WindowsEngineService
-except ImportError:
-    WindowsEngineService = None
-
-try:
-    from src.services.windows_shared_preview_service import WindowsSharedPreviewService
-except ImportError:
-    WindowsSharedPreviewService = None
-
 
 class CamCompositeApp(tk.Tk):
     def __init__(self):
@@ -83,12 +73,13 @@ class CamCompositeApp(tk.Tk):
             self.frame_forwarder = NDIFrameSender()
             self.preview_service.set_frame_forwarder(self.frame_forwarder)
 
-        elif self.current_os == "Windows":
-            if WindowsEngineService is not None:
-                self.windows_engine_service = WindowsEngineService()
 
-            if WindowsSharedPreviewService is not None:
-                self.windows_shared_preview_service = WindowsSharedPreviewService(self)
+        elif self.current_os == "Windows":
+            from src.services.windows_engine_service import WindowsEngineService
+            from src.services.windows_shared_preview_service import WindowsSharedPreviewService
+
+            self.windows_engine_service = WindowsEngineService()
+            self.windows_shared_preview_service = WindowsSharedPreviewService(self)
 
             # Windows:
             # video_engine.exe -> shared memory -> app preview before Start
