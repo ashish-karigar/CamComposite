@@ -6,9 +6,48 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		EE033D492FFDAD7B00C5B154 /* com.ashishkarigar.CamCompositeCameraHost.CamCompositeCameraExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = EE033D3F2FFDAD7A00C5B154 /* com.ashishkarigar.CamCompositeCameraHost.CamCompositeCameraExtension.systemextension */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		EE033D472FFDAD7B00C5B154 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EE033D1F2FFDABF800C5B154 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EE033D3E2FFDAD7A00C5B154;
+			remoteInfo = CamCompositeCameraExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		EE033D4A2FFDAD7B00C5B154 /* Embed System Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(SYSTEM_EXTENSIONS_FOLDER_PATH)";
+			dstSubfolderSpec = 16;
+			files = (
+				EE033D492FFDAD7B00C5B154 /* com.ashishkarigar.CamCompositeCameraHost.CamCompositeCameraExtension.systemextension in Embed System Extensions */,
+			);
+			name = "Embed System Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		EE033D272FFDABF800C5B154 /* CamCompositeCameraHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CamCompositeCameraHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EE033D3F2FFDAD7A00C5B154 /* com.ashishkarigar.CamCompositeCameraHost.CamCompositeCameraExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = com.ashishkarigar.CamCompositeCameraHost.CamCompositeCameraExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		EE033D4D2FFDAD7B00C5B154 /* Exceptions for "CamCompositeCameraExtension" folder in "CamCompositeCameraExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = EE033D3E2FFDAD7A00C5B154 /* CamCompositeCameraExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		EE033D292FFDABF800C5B154 /* CamCompositeCameraHost */ = {
@@ -16,10 +55,25 @@
 			path = CamCompositeCameraHost;
 			sourceTree = "<group>";
 		};
+		EE033D402FFDAD7A00C5B154 /* CamCompositeCameraExtension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				EE033D4D2FFDAD7B00C5B154 /* Exceptions for "CamCompositeCameraExtension" folder in "CamCompositeCameraExtension" target */,
+			);
+			path = CamCompositeCameraExtension;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		EE033D242FFDABF800C5B154 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EE033D3C2FFDAD7A00C5B154 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +87,7 @@
 			isa = PBXGroup;
 			children = (
 				EE033D292FFDABF800C5B154 /* CamCompositeCameraHost */,
+				EE033D402FFDAD7A00C5B154 /* CamCompositeCameraExtension */,
 				EE033D282FFDABF800C5B154 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +96,7 @@
 			isa = PBXGroup;
 			children = (
 				EE033D272FFDABF800C5B154 /* CamCompositeCameraHost.app */,
+				EE033D3F2FFDAD7A00C5B154 /* com.ashishkarigar.CamCompositeCameraHost.CamCompositeCameraExtension.systemextension */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -55,10 +111,12 @@
 				EE033D232FFDABF800C5B154 /* Sources */,
 				EE033D242FFDABF800C5B154 /* Frameworks */,
 				EE033D252FFDABF800C5B154 /* Resources */,
+				EE033D4A2FFDAD7B00C5B154 /* Embed System Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				EE033D482FFDAD7B00C5B154 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				EE033D292FFDABF800C5B154 /* CamCompositeCameraHost */,
@@ -69,6 +127,28 @@
 			productName = CamCompositeCameraHost;
 			productReference = EE033D272FFDABF800C5B154 /* CamCompositeCameraHost.app */;
 			productType = "com.apple.product-type.application";
+		};
+		EE033D3E2FFDAD7A00C5B154 /* CamCompositeCameraExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EE033D4E2FFDAD7B00C5B154 /* Build configuration list for PBXNativeTarget "CamCompositeCameraExtension" */;
+			buildPhases = (
+				EE033D3B2FFDAD7A00C5B154 /* Sources */,
+				EE033D3C2FFDAD7A00C5B154 /* Frameworks */,
+				EE033D3D2FFDAD7A00C5B154 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				EE033D402FFDAD7A00C5B154 /* CamCompositeCameraExtension */,
+			);
+			name = CamCompositeCameraExtension;
+			packageProductDependencies = (
+			);
+			productName = CamCompositeCameraExtension;
+			productReference = EE033D3F2FFDAD7A00C5B154 /* com.ashishkarigar.CamCompositeCameraHost.CamCompositeCameraExtension.systemextension */;
+			productType = "com.apple.product-type.system-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -81,6 +161,9 @@
 				LastUpgradeCheck = 2630;
 				TargetAttributes = {
 					EE033D262FFDABF800C5B154 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					EE033D3E2FFDAD7A00C5B154 = {
 						CreatedOnToolsVersion = 26.3;
 					};
 				};
@@ -100,12 +183,20 @@
 			projectRoot = "";
 			targets = (
 				EE033D262FFDABF800C5B154 /* CamCompositeCameraHost */,
+				EE033D3E2FFDAD7A00C5B154 /* CamCompositeCameraExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		EE033D252FFDABF800C5B154 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EE033D3D2FFDAD7A00C5B154 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +213,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		EE033D3B2FFDAD7A00C5B154 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		EE033D482FFDAD7B00C5B154 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EE033D3E2FFDAD7A00C5B154 /* CamCompositeCameraExtension */;
+			targetProxy = EE033D472FFDAD7B00C5B154 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		EE033D302FFDABF900C5B154 /* Debug */ = {
@@ -309,6 +415,68 @@
 			};
 			name = Release;
 		};
+		EE033D4B2FFDAD7B00C5B154 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = CamCompositeCameraExtension/CamCompositeCameraExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2Q7R2Q9FGM;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CamCompositeCameraExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = CamCompositeCameraExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ashishkarigar.CamCompositeCameraHost.CamCompositeCameraExtension;
+				PRODUCT_NAME = "$(inherited)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		EE033D4C2FFDAD7B00C5B154 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = CamCompositeCameraExtension/CamCompositeCameraExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2Q7R2Q9FGM;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CamCompositeCameraExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = CamCompositeCameraExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ashishkarigar.CamCompositeCameraHost.CamCompositeCameraExtension;
+				PRODUCT_NAME = "$(inherited)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -326,6 +494,15 @@
 			buildConfigurations = (
 				EE033D332FFDABF900C5B154 /* Debug */,
 				EE033D342FFDABF900C5B154 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		EE033D4E2FFDAD7B00C5B154 /* Build configuration list for PBXNativeTarget "CamCompositeCameraExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EE033D4B2FFDAD7B00C5B154 /* Debug */,
+				EE033D4C2FFDAD7B00C5B154 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
