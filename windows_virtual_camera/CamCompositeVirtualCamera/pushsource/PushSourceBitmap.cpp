@@ -3,6 +3,7 @@
 //
 // Desc: Cam-Composite DirectShow virtual camera source.
 //       Reads YUY2 frames from the CamComposite shared memory buffer.
+//       Only outputs live frames when shared->broadcasting == 1.
 //------------------------------------------------------------------------------
 
 #include <streams.h>
@@ -21,6 +22,24 @@ const AMOVIESETUP_MEDIATYPE sudOpPinTypes =
     &MEDIATYPE_Video,
     &MEDIASUBTYPE_YUY2
 };
+
+static void FillYuy2Black(BYTE* pData)
+{
+    if (!pData)
+    {
+        return;
+    }
+
+    // YUY2 black is not zero.
+    // Each 2-pixel group is: Y0 U Y1 V = 16 128 16 128.
+    for (LONG i = 0; i < CAMCOMP_FRAME_SIZE; i += 4)
+    {
+        pData[i + 0] = 16;
+        pData[i + 1] = 128;
+        pData[i + 2] = 16;
+        pData[i + 3] = 128;
+    }
+}
 
 static void CloseSharedFrame()
 {
@@ -297,7 +316,9 @@ HRESULT CPushPinBitmap::FillBuffer(IMediaSample *pSample)
             g_sharedFrame->height == CAMCOMP_HEIGHT &&
             g_sharedFrame->bytesPerPixel == CAMCOMP_BYTES_PER_PIXEL &&
             g_sharedFrame->frameSize == CAMCOMP_FRAME_SIZE &&
-            g_sharedFrame->bufferCount == CAMCOMP_BUFFER_COUNT
+            g_sharedFrame->bufferCount == CAMCOMP_BUFFER_COUNT &&
+            g_sharedFrame->broadcasting == 1 &&
+            g_sharedFrame->frameIndex > 0
         )
         {
             LONG bufferIndex = g_sharedFrame->readableBufferIndex;
@@ -347,7 +368,7 @@ HRESULT CPushPinBitmap::FillBuffer(IMediaSample *pSample)
 
     if (!copiedFrame)
     {
-        ZeroMemory(pData, CAMCOMP_FRAME_SIZE);
+        FillYuy2Black(pData);
     }
 
     REFERENCE_TIME rtStart = m_iFrameNumber * m_rtFrameLength;

@@ -8,14 +8,16 @@ class WindowsEngineService:
         self.process = None
         self.current_camera_ids = []
         self.current_mode = None
+        self.current_broadcasting = False
         self.runtime_dir = None
         self.control_file = None
         self.log_file_handle = None
         self.log_file_path = None
 
-    def start(self, mode, camera_ids, *, force_restart=False):
+    def start(self, mode, camera_ids, *, force_restart=False, broadcasting=False):
         normalized_mode = str(mode)
         normalized_camera_ids = [str(cam_id) for cam_id in camera_ids]
+        normalized_broadcasting = bool(broadcasting)
 
         exe_path = self._find_engine_exe()
         if exe_path is None:
@@ -28,12 +30,17 @@ class WindowsEngineService:
         self.control_file = self.runtime_dir / "control.txt"
         self.log_file_path = self.runtime_dir / "video_engine.log"
 
-        self._write_control_file(normalized_mode, normalized_camera_ids)
+        self._write_control_file(
+            normalized_mode,
+            normalized_camera_ids,
+            normalized_broadcasting,
+        )
 
         if self.is_running() and not force_restart:
             print("[WindowsEngine] Engine already running. Updated control file only.")
             self.current_mode = normalized_mode
             self.current_camera_ids = normalized_camera_ids
+            self.current_broadcasting = normalized_broadcasting
             return
 
         self.stop()
@@ -45,6 +52,7 @@ class WindowsEngineService:
         print("[WindowsEngine] Working directory:", workdir)
         print("[WindowsEngine] Control file:", self.control_file)
         print("[WindowsEngine] Log file:", self.log_file_path)
+        print("[WindowsEngine] Broadcasting:", normalized_broadcasting)
 
         creationflags = 0
 
@@ -64,6 +72,19 @@ class WindowsEngineService:
 
         self.current_mode = normalized_mode
         self.current_camera_ids = normalized_camera_ids
+        self.current_broadcasting = normalized_broadcasting
+
+    def set_broadcasting(self, enabled):
+        if not self.current_camera_ids:
+            return
+
+        self.current_broadcasting = bool(enabled)
+
+        self._write_control_file(
+            self.current_mode or "single",
+            self.current_camera_ids,
+            self.current_broadcasting,
+        )
 
     def stop(self):
         if self.process is not None:
@@ -82,6 +103,7 @@ class WindowsEngineService:
         self.process = None
         self.current_mode = None
         self.current_camera_ids = []
+        self.current_broadcasting = False
 
         if self.log_file_handle is not None:
             try:
@@ -98,7 +120,7 @@ class WindowsEngineService:
             return None
         return self.process.poll()
 
-    def _write_control_file(self, mode, camera_ids):
+    def _write_control_file(self, mode, camera_ids, broadcasting=False):
         if self.control_file is None:
             root = Path(__file__).resolve().parents[2]
             self.runtime_dir = root / "windows_engine" / "build" / "runtime"
@@ -108,6 +130,7 @@ class WindowsEngineService:
         content = [
             f"mode={mode}",
             "cameras=" + ",".join(camera_ids),
+            f"broadcasting={1 if broadcasting else 0}",
         ]
 
         tmp_file = self.control_file.with_suffix(".tmp")
