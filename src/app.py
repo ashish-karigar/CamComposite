@@ -2,7 +2,7 @@
 import platform
 import tkinter as tk
 from tkinter import ttk, messagebox
-
+import threading
 from constants import COLORS, WINDOW
 from styles import configure_styles
 from ui import (
@@ -484,6 +484,45 @@ class CamCompositeApp(tk.Tk):
         except Exception as e:
             self.set_footer_message(f"Could not update Windows engine: {e}", is_error=True)
 
+    def _start_obs_in_background(self):
+        if self.obs_controller is None:
+            return
+
+        def worker():
+            try:
+                self.obs_controller.start()
+
+                if self.auto_hide_obs_var.get():
+                    self.after(0, lambda: self.after(1000, self.obs_controller.hide_obs))
+
+                self.after(0, lambda: self.status_var.set("Broadcasting"))
+                self.after(0, self.clear_footer_message)
+
+            except Exception as e:
+                self.after(0, lambda: self.set_footer_message(f"OBS start warning: {e}", is_error=True))
+
+        threading.Thread(
+            target=worker,
+            name="MacOBSStart",
+            daemon=True,
+        ).start()
+
+    def _stop_obs_in_background(self):
+        if self.obs_controller is None:
+            return
+
+        def worker():
+            try:
+                self.obs_controller.stop()
+            except Exception as e:
+                print(f"OBS stop warning: {e}")
+
+        threading.Thread(
+            target=worker,
+            name="MacOBSStop",
+            daemon=True,
+        ).start()
+
     def start_pipeline(self):
         if self.pipeline_running:
             self.set_footer_message("Pipeline is already running.", is_error=True)
@@ -532,20 +571,35 @@ class CamCompositeApp(tk.Tk):
                 self.preview_service.stop()
                 self._show_broadcasting_message()
 
+
             else:
                 if self.frame_forwarder is not None:
                     self.frame_forwarder.start()
 
-                self.preview_service.start(
-                    self.selected_cameras,
-                    self.mode_var.get(),
-                    render_local=self.preview_var.get(),
-                )
+                if self.current_os == "Darwin":
+                    # macOS optimization:
+                    # Keep camera loop warm and forwarding to NDI/OBS,
+                    # but hide local preview while broadcasting.
+                    self.preview_service.start(
+                        self.selected_cameras,
+                        self.mode_var.get(),
+                        render_local=False,
+                    )
+                    self._show_broadcasting_message()
+                else:
+                    self.preview_service.start(
+                        self.selected_cameras,
+                        self.mode_var.get(),
+                        render_local=self.preview_var.get(),
+                    )
 
             if self.obs_controller is not None:
-                self.obs_controller.start()
-                if self.auto_hide_obs_var.get():
-                    self.after(1000, self.obs_controller.hide_obs)
+                if self.current_os == "Darwin":
+                    self._start_obs_in_background()
+                else:
+                    self.obs_controller.start()
+                    if self.auto_hide_obs_var.get():
+                        self.after(1000, self.obs_controller.hide_obs)
 
             self.pipeline_running = True
 
@@ -640,11 +694,24 @@ class CamCompositeApp(tk.Tk):
         try:
             self._reset_preview_message_style()
 
+            render_local = True
+
+            if self.current_os == "Darwin" and self.pipeline_running:
+                # macOS optimization:
+                # While broadcasting through OBS/NDI, keep the camera loop warm
+                # but do not bring local preview back on layout/camera changes.
+                render_local = False
+            else:
+                render_local = self.preview_var.get() if self.pipeline_running else True
+
             self.preview_service.start(
                 self.selected_cameras,
                 self.mode_var.get(),
-                render_local=self.preview_var.get() if self.pipeline_running else True,
+                render_local=render_local,
             )
+
+            if self.current_os == "Darwin" and self.pipeline_running:
+                self._show_broadcasting_message()
 
             self.clear_footer_message()
         except Exception as e:
@@ -657,11 +724,14 @@ class CamCompositeApp(tk.Tk):
             self.set_footer_message("Pipeline is not running.", is_error=True)
             return
 
-        try:
-            if self.obs_controller is not None:
-                self.obs_controller.stop()
-        except Exception as e:
-            print(f"OBS stop warning: {e}")
+        if self.obs_controller is not None:
+            if self.current_os == "Darwin":
+                self._stop_obs_in_background()
+            else:
+                try:
+                    self.obs_controller.stop()
+                except Exception as e:
+                    print(f"OBS stop warning: {e}")
 
         if self.current_os == "Windows":
             # Do NOT stop video_engine.exe.
@@ -679,11 +749,22 @@ class CamCompositeApp(tk.Tk):
             if self.windows_shared_preview_service is not None:
                 self.windows_shared_preview_service.start()
 
-        else:
-            self.preview_service.stop()
 
+        else:
             if self.frame_forwarder is not None:
                 self.frame_forwarder.stop()
+
+            # macOS optimization:
+            # Do NOT release cameras on Stop.
+            # Keep preview warm like Windows; only stop NDI/OBS forwarding.
+            if self.current_os == "Darwin" and self.selected_cameras:
+                self.preview_service.start(
+                    self.selected_cameras,
+                    self.mode_var.get(),
+                    render_local=True,
+                )
+            else:
+                self.preview_service.stop()
 
         self.pipeline_running = False
         self.status_var.set("Stopped")

@@ -1,6 +1,7 @@
 # preview_service.py
 import cv2
 import numpy as np
+import threading
 from PIL import Image, ImageTk
 from .threaded_capture import ThreadedCapture
 
@@ -37,6 +38,11 @@ class PreviewService:
         self.failed_frame_counts = {}
         self.usb_warning_shown = False
         self.failed_camera_ids = set()
+
+        # Used by macOS async camera open/close path.
+        # Windows pipeline no longer relies on this service for camera ownership.
+        self.capture_lock = threading.Lock()
+        self.opening_camera_ids = set()
 
     def set_frame_forwarder(self, forwarder):
         self.frame_forwarder = forwarder
@@ -131,7 +137,8 @@ class PreviewService:
             actual_fps = cap.get(cv2.CAP_PROP_FPS)
 
             print(
-                f'requested={capture_w}x{capture_h}@{capture_fps}, '
+                f"requested={capture_w}x{capture_h}@{capture_fps}, "
+                f"actual={actual_w}x{actual_h}@{actual_fps}"
             )
 
             return cap
@@ -157,34 +164,93 @@ class PreviewService:
 
         for cam_id in list(self.captures.keys()):
             if cam_id not in needed:
-                try:
-                    self.captures[cam_id].release()
-                except Exception:
-                    pass
-                del self.captures[cam_id]
+                with self.capture_lock:
+                    cap_to_release = self.captures.pop(cam_id, None)
+
                 self.last_good_frames.pop(cam_id, None)
+                self.failed_frame_counts.pop(cam_id, None)
+                self.failed_camera_ids.discard(cam_id)
+
+                if cap_to_release is not None:
+                    if self.app.current_os == "Darwin":
+                        self._release_capture_in_background(cap_to_release, cam_id)
+                    else:
+                        try:
+                            cap_to_release.release()
+                        except Exception:
+                            pass
 
         for cam_id in needed_ids:
             cam_id = str(cam_id)
-            if cam_id in self.captures:
+
+            with self.capture_lock:
+                already_open = cam_id in self.captures
+
+            if already_open or cam_id in self.opening_camera_ids:
                 continue
 
             cam = self._camera_by_selected_id(cam_id)
             if cam is None:
                 raise RuntimeError(f"Camera {cam_id} not found.")
 
+            if self.app.current_os == "Darwin":
+                self._open_capture_in_background(cam_id, cam)
+            else:
+                self._open_capture_sync(cam_id, cam)
+
+    def _open_capture_sync(self, cam_id, cam):
+        try:
+            cap = self._open_capture(cam, self.app.mode_var.get())
+
+            if not cap.isOpened():
+                raise RuntimeError(f'Failed to open "{cam["name"]}".')
+
+            threaded = ThreadedCapture(
+                cap,
+                name=cam.get("name", f"Camera {cam_id}")
+            ).start()
+
+            with self.capture_lock:
+                self.captures[cam_id] = threaded
+
+            self.failed_camera_ids.discard(cam_id)
+
+        except Exception as e:
+            print(f"Camera open warning for {cam.get('name', cam_id)}: {e}")
+
+            self.failed_camera_ids.add(cam_id)
+
+            self._show_status_warning(
+                "One camera could not start. USB bandwidth may be overloaded. "
+                "Try connecting the capture card/cameras to different USB ports."
+            )
+
+    def _open_capture_in_background(self, cam_id, cam):
+        self.opening_camera_ids.add(cam_id)
+        self.failed_camera_ids.discard(cam_id)
+
+        def worker():
             try:
+                print(f"[PreviewService] Opening macOS camera {cam_id} in background...")
+
                 cap = self._open_capture(cam, self.app.mode_var.get())
 
                 if not cap.isOpened():
                     raise RuntimeError(f'Failed to open "{cam["name"]}".')
 
-                self.captures[cam_id] = ThreadedCapture(
+                threaded = ThreadedCapture(
                     cap,
                     name=cam.get("name", f"Camera {cam_id}")
                 ).start()
 
-                self.failed_camera_ids.discard(cam_id)
+                with self.capture_lock:
+                    if cam_id in self.active_camera_ids:
+                        self.captures[cam_id] = threaded
+                        self.failed_camera_ids.discard(cam_id)
+                    else:
+                        threaded.release()
+
+                print(f"[PreviewService] macOS camera {cam_id} ready.")
 
             except Exception as e:
                 print(f"Camera open warning for {cam.get('name', cam_id)}: {e}")
@@ -195,6 +261,30 @@ class PreviewService:
                     "One camera could not start. USB bandwidth may be overloaded. "
                     "Try connecting the capture card/cameras to different USB ports."
                 )
+
+            finally:
+                self.opening_camera_ids.discard(cam_id)
+
+        threading.Thread(
+            target=worker,
+            name=f"MacCameraOpen-{cam_id}",
+            daemon=True,
+        ).start()
+
+    def _release_capture_in_background(self, cap, cam_id):
+        def worker():
+            try:
+                print(f"[PreviewService] Releasing macOS camera {cam_id} in background...")
+                cap.release()
+                print(f"[PreviewService] macOS camera {cam_id} released.")
+            except Exception as e:
+                print(f"[PreviewService] macOS camera {cam_id} release warning: {e}")
+
+        threading.Thread(
+            target=worker,
+            name=f"MacCameraRelease-{cam_id}",
+            daemon=True,
+        ).start()
 
     def _update_frame(self):
         if not self.active_camera_ids:
@@ -217,16 +307,10 @@ class PreviewService:
                 frames.append(self._blank_cell(self.output_w, self.output_h))
                 continue
 
-            cap = self.captures.get(cam_id)
+            with self.capture_lock:
+                cap = self.captures.get(cam_id)
 
             if cap is None:
-                if not self.usb_warning_shown:
-                    self.usb_warning_shown = True
-                    self._show_status_warning(
-                        "One camera could not start. USB bandwidth may be overloaded. "
-                        "Try connecting the capture card/cameras to different USB ports."
-                    )
-
                 frames.append(self._blank_cell(self.output_w, self.output_h))
                 continue
 
@@ -389,11 +473,13 @@ class PreviewService:
 
         return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-    def stop(self):
+    def stop(self, release_captures=True, clear_canvas=True):
         self.last_good_frames = {}
         self.failed_frame_counts = {}
         self.usb_warning_shown = False
         self.failed_camera_ids = set()
+        self.opening_camera_ids = set()
+
         if self.preview_job is not None:
             try:
                 self.app.after_cancel(self.preview_job)
@@ -401,18 +487,26 @@ class PreviewService:
                 pass
             self.preview_job = None
 
-        for cap in self.captures.values():
-            try:
-                cap.release()
-            except Exception:
-                pass
+        if release_captures:
+            with self.capture_lock:
+                captures_to_release = list(self.captures.items())
+                self.captures = {}
 
-        self.captures = {}
-        self.active_camera_ids = []
+            for cam_id, cap in captures_to_release:
+                try:
+                    if self.app.current_os == "Darwin":
+                        self._release_capture_in_background(cap, cam_id)
+                    else:
+                        cap.release()
+                except Exception:
+                    pass
+
+            self.active_camera_ids = []
+
         self.preview_image_ref = None
 
-        if hasattr(self.app, "preview_canvas"):
+        if clear_canvas and hasattr(self.app, "preview_canvas"):
             self.app.preview_canvas.delete("all")
 
-        if hasattr(self.app, "preview_text_label"):
+        if clear_canvas and hasattr(self.app, "preview_text_label"):
             self.app.preview_text_label.place(relx=0.5, rely=0.5, anchor="center")
