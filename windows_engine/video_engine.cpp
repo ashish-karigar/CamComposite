@@ -8,8 +8,11 @@
 #include <chrono>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -29,6 +32,12 @@ static constexpr int OUTPUT_H = 1080;
 static constexpr int FPS = 30;
 
 static const std::string CONTROL_FILE_PATH = "runtime/control.txt";
+
+struct EngineControl
+{
+    std::string mode;
+    std::vector<int> cameraIndexes;
+};
 
 class SharedFrameWriter
 {
@@ -116,7 +125,14 @@ public:
 
         if (bgrFrame.cols != CAMCOMP_WIDTH || bgrFrame.rows != CAMCOMP_HEIGHT)
         {
-            cv::resize(bgrFrame, frame, cv::Size(CAMCOMP_WIDTH, CAMCOMP_HEIGHT), 0, 0, cv::INTER_AREA);
+            cv::resize(
+                bgrFrame,
+                frame,
+                cv::Size(CAMCOMP_WIDTH, CAMCOMP_HEIGHT),
+                0,
+                0,
+                cv::INTER_AREA
+            );
         }
         else
         {
@@ -264,7 +280,7 @@ private:
             cap.release();
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
         std::cout << "Opening camera index " << cameraIndex << "...\n";
 
@@ -475,15 +491,44 @@ std::string trim(const std::string& value)
     return value.substr(start, end - start + 1);
 }
 
-std::string readModeFromControlFile(const std::string& fallbackMode)
+std::vector<int> parseCameraList(const std::string& value)
+{
+    std::vector<int> result;
+    std::stringstream ss(value);
+    std::string item;
+
+    while (std::getline(ss, item, ','))
+    {
+        item = trim(item);
+
+        if (item.empty())
+        {
+            continue;
+        }
+
+        try
+        {
+            result.push_back(std::stoi(item));
+        }
+        catch (...)
+        {
+            std::cerr << "Invalid camera index in control file: " << item << "\n";
+        }
+    }
+
+    return result;
+}
+
+EngineControl readControlFile(const EngineControl& fallback)
 {
     std::ifstream file(CONTROL_FILE_PATH);
 
     if (!file.is_open())
     {
-        return fallbackMode;
+        return fallback;
     }
 
+    EngineControl control = fallback;
     std::string line;
 
     while (std::getline(file, line))
@@ -496,12 +541,64 @@ std::string readModeFromControlFile(const std::string& fallbackMode)
 
             if (!mode.empty())
             {
-                return mode;
+                control.mode = mode;
+            }
+        }
+        else if (line.rfind("cameras=", 0) == 0)
+        {
+            std::string camerasText = trim(line.substr(8));
+            std::vector<int> parsed = parseCameraList(camerasText);
+
+            if (!parsed.empty())
+            {
+                control.cameraIndexes = parsed;
             }
         }
     }
 
-    return fallbackMode;
+    return control;
+}
+
+void syncReaders(
+    std::map<int, std::unique_ptr<CameraReader>>& readers,
+    const std::vector<int>& requestedIndexes
+)
+{
+    std::set<int> wanted(requestedIndexes.begin(), requestedIndexes.end());
+
+    for (auto it = readers.begin(); it != readers.end();)
+    {
+        if (wanted.find(it->first) == wanted.end())
+        {
+            std::cout << "Closing camera index " << it->first << "\n";
+            it->second->stop();
+            it = readers.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    for (int index : requestedIndexes)
+    {
+        if (readers.find(index) != readers.end())
+        {
+            continue;
+        }
+
+        std::cout << "Adding camera index " << index << "\n";
+
+        auto reader = std::make_unique<CameraReader>(index);
+
+        if (!reader->start())
+        {
+            std::cerr << "Warning: camera " << index << " failed to start. Using black tile.\n";
+            continue;
+        }
+
+        readers[index] = std::move(reader);
+    }
 }
 
 int main(int argc, char** argv)
@@ -513,13 +610,12 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::string mode = argv[1];
-    std::string activeMode = mode;
+    EngineControl activeControl;
+    activeControl.mode = argv[1];
 
-    std::vector<int> cameraIndexes;
     for (int i = 2; i < argc; i++)
     {
-        cameraIndexes.push_back(std::stoi(argv[i]));
+        activeControl.cameraIndexes.push_back(std::stoi(argv[i]));
     }
 
     SharedFrameWriter sharedWriter;
@@ -529,21 +625,10 @@ int main(int argc, char** argv)
         return 3;
     }
 
-    std::vector<std::unique_ptr<CameraReader>> readers;
+    std::map<int, std::unique_ptr<CameraReader>> readers;
+    syncReaders(readers, activeControl.cameraIndexes);
 
-    for (int index : cameraIndexes)
-    {
-        auto reader = std::make_unique<CameraReader>(index);
-
-        if (!reader->start())
-        {
-            std::cerr << "Warning: camera " << index << " failed to start. Using black tile.\n";
-        }
-
-        readers.push_back(std::move(reader));
-    }
-
-    std::cout << "Started " << readers.size() << " camera readers. Mode: " << activeMode << "\n";
+    std::cout << "Started engine. Mode: " << activeControl.mode << "\n";
     std::cout << "Running continuous compositor. Press Ctrl+C to stop.\n";
 
     int frameCounter = 0;
@@ -552,23 +637,42 @@ int main(int argc, char** argv)
     {
         if (frameCounter % 5 == 0)
         {
-            std::string requestedMode = readModeFromControlFile(activeMode);
+            EngineControl requestedControl = readControlFile(activeControl);
 
-            if (!requestedMode.empty() && requestedMode != activeMode)
+            bool modeChanged = requestedControl.mode != activeControl.mode;
+            bool camerasChanged = requestedControl.cameraIndexes != activeControl.cameraIndexes;
+
+            if (modeChanged || camerasChanged)
             {
-                activeMode = requestedMode;
-                std::cout << "Layout mode changed to: " << activeMode << "\n";
+                if (modeChanged)
+                {
+                    std::cout << "Layout mode changed to: " << requestedControl.mode << "\n";
+                }
+
+                if (camerasChanged)
+                {
+                    std::cout << "Camera selection changed. Syncing readers without full restart.\n";
+                    syncReaders(readers, requestedControl.cameraIndexes);
+                }
+
+                activeControl = requestedControl;
             }
         }
 
         std::vector<cv::Mat> frames;
         int validFrameCount = 0;
 
-        for (auto& reader : readers)
+        for (int index : activeControl.cameraIndexes)
         {
             cv::Mat frame;
 
-            if (reader->readLatest(frame) && isNonBlack(frame))
+            auto it = readers.find(index);
+
+            if (
+                it != readers.end() &&
+                it->second->readLatest(frame) &&
+                isNonBlack(frame)
+            )
             {
                 frames.push_back(frame);
                 validFrameCount++;
@@ -579,7 +683,7 @@ int main(int argc, char** argv)
             }
         }
 
-        cv::Mat finalOutput = composeFrames(frames, activeMode);
+        cv::Mat finalOutput = composeFrames(frames, activeControl.mode);
         sharedWriter.writeBgrFrame(finalOutput);
 
         frameCounter++;
@@ -588,18 +692,18 @@ int main(int argc, char** argv)
         {
             std::cout << "Wrote shared frame. Cameras ready: "
                       << validFrameCount << "/"
-                      << readers.size()
+                      << activeControl.cameraIndexes.size()
                       << ". Mode: "
-                      << activeMode
+                      << activeControl.mode
                       << "\n";
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(1000 / FPS));
     }
 
-    for (auto& reader : readers)
+    for (auto& pair : readers)
     {
-        reader->stop();
+        pair.second->stop();
     }
 
     return 0;
