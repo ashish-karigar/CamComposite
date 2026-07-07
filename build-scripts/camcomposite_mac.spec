@@ -17,6 +17,7 @@ a = Analysis(
         ("../src/utils", "src/utils"),
         ("../assets/bin/macos/ffmpeg", "assets/bin/macos"),
         ("../packaging/mac/resources/CamComposite-OBS.json", "."),
+        ("../packaging/mac/resources/basic.ini", "."),
         ("../packaging/mac/resources/mac-first-run-setup.sh", "."),
         ("../packaging/mac/resources/obs-studio-32.0.4-macos-apple.dmg", "."),
         ("../packaging/mac/resources/distroav-6.1.1-macos-universal.pkg", "."),

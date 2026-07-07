@@ -17,6 +17,7 @@ if platform.system() == "Darwin":
         install_obs,
         install_pkg,
         copy_obs_scene_config,
+        copy_obs_profile_config,
     )
 elif platform.system() == "Windows":
     from helpers.win_first_run_check import (
@@ -53,10 +54,12 @@ def run_startup_setup(root, splash):
                 splash.append_log("NDI runtime installed.")
 
             splash.set_status("Checking OBS config...", "Preparing CamComposite scene collection.")
-            splash.append_log("Checking OBS scene config...")
-            if not obs_scene_config_present():
-                copy_obs_scene_config()
-                splash.append_log("OBS scene config copied.")
+            splash.append_log("Preparing OBS scene config...")
+
+            copy_obs_scene_config()
+            copy_obs_profile_config()
+
+            splash.append_log("OBS scene config copied/patched.")
 
         elif platform.system() == "Windows":
             ensure_windows_requirements(splash)

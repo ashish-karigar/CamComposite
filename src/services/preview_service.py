@@ -6,8 +6,7 @@ from PIL import Image, ImageTk
 class PreviewService:
     def __init__(self, app):
         self.app = app
-        self.capture_a = None
-        self.capture_b = None
+        self.captures = []
         self.preview_job = None
         self.preview_image_ref = None
         self.canvas_image_id = None
@@ -17,6 +16,15 @@ class PreviewService:
     def set_frame_forwarder(self, forwarder):
         self.frame_forwarder = forwarder
 
+    def _open_capture(self, preview_index):
+        if self.app.current_os == "Darwin":
+            cap = cv2.VideoCapture(int(preview_index), cv2.CAP_AVFOUNDATION)
+        elif self.app.current_os == "Windows":
+            cap = cv2.VideoCapture(int(preview_index), cv2.CAP_DSHOW)
+        else:
+            cap = cv2.VideoCapture(int(preview_index))
+        return cap
+
     def start(self, selected_camera_ids, mode, render_local=True):
         self.stop()
 
@@ -25,35 +33,32 @@ class PreviewService:
 
         self.render_local = render_local
 
-        cam_a = self._camera_by_selected_id(selected_camera_ids[0])
-        if cam_a is None:
-            raise RuntimeError("Primary camera not found.")
+        self.captures = []
 
-        if self.app.current_os == "Darwin":
-            self.capture_a = cv2.VideoCapture(int(cam_a["preview_index"]), cv2.CAP_AVFOUNDATION)
-        elif self.app.current_os == "Windows":
-            self.capture_a = cv2.VideoCapture(int(cam_a["preview_index"]), cv2.CAP_DSHOW)
-        else:
-            self.capture_a = cv2.VideoCapture(int(cam_a["preview_index"]))
-        if not self.capture_a.isOpened():
-            self.capture_a = None
-            raise RuntimeError(f'Failed to open "{cam_a["name"]}".')
+        required_counts = {
+            "single": 1,
+            "pip": 2,
+            "sbs": 2,
+            "stacked": 2,
+            "triple": 3,
+            "quad": 4,
+        }
+        required = required_counts.get(mode, 1)
 
-        if len(selected_camera_ids) > 1 and mode != "single":
-            cam_b = self._camera_by_selected_id(selected_camera_ids[1])
-            if cam_b is None:
+        camera_ids_to_open = selected_camera_ids[:required]
+
+        for idx, selected_id in enumerate(camera_ids_to_open):
+            cam = self._camera_by_selected_id(selected_id)
+            if cam is None:
                 self.stop()
-                raise RuntimeError("Secondary camera not found.")
+                raise RuntimeError(f'Camera #{idx + 1} not found.')
 
-            if self.app.current_os == "Darwin":
-                self.capture_b = cv2.VideoCapture(int(cam_b["preview_index"]), cv2.CAP_AVFOUNDATION)
-            elif self.app.current_os == "Windows":
-                self.capture_b = cv2.VideoCapture(int(cam_b["preview_index"]), cv2.CAP_DSHOW)
-            else:
-                self.capture_b = cv2.VideoCapture(int(cam_b["preview_index"]))
-            if not self.capture_b.isOpened():
+            cap = self._open_capture(cam["preview_index"])
+            if not cap.isOpened():
                 self.stop()
-                raise RuntimeError(f'Failed to open "{cam_b["name"]}".')
+                raise RuntimeError(f'Failed to open "{cam["name"]}".')
+
+            self.captures.append(cap)
 
         if self.render_local:
             self.app.preview_text_label.place_forget()
@@ -71,23 +76,20 @@ class PreviewService:
         return None
 
     def _update_frame(self):
-        if self.capture_a is None:
+        if not self.captures:
             return
 
         mode = self.app.mode_var.get()
 
-        ok_a, frame_a = self.capture_a.read()
-        if not ok_a or frame_a is None:
-            self.preview_job = self.app.after(60, self._update_frame)
-            return
+        frames = []
+        for cap in self.captures:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                self.preview_job = self.app.after(60, self._update_frame)
+                return
+            frames.append(frame)
 
-        frame_b = None
-        if self.capture_b is not None and mode != "single":
-            ok_b, temp_b = self.capture_b.read()
-            if ok_b and temp_b is not None:
-                frame_b = temp_b
-
-        composed = self._compose_frame(frame_a, frame_b, mode)
+        composed = self._compose_frame(frames, mode)
 
         if self.frame_forwarder is not None:
             try:
@@ -120,26 +122,37 @@ class PreviewService:
 
         self.preview_job = self.app.after(30, self._update_frame)
 
-    def _compose_frame(self, frame_a, frame_b, mode):
-        if mode == "single" or frame_b is None:
-            return frame_a
+    def _compose_frame(self, frames, mode):
+        if not frames:
+            raise RuntimeError("No frames available for preview.")
 
-        if mode == "sbs":
+        if mode == "single" or len(frames) == 1:
+            return frames[0]
+
+        if mode == "sbs" and len(frames) >= 2:
+            frame_a, frame_b = frames[0], frames[1]
             target_h = min(frame_a.shape[0], frame_b.shape[0])
             a = self._resize_to_height_keep_aspect(frame_a, target_h)
             b = self._resize_to_height_keep_aspect(frame_b, target_h)
             return cv2.hconcat([a, b])
 
-        if mode == "stacked":
+        if mode == "stacked" and len(frames) >= 2:
+            frame_a, frame_b = frames[0], frames[1]
             target_w = min(frame_a.shape[1], frame_b.shape[1])
             a = self._resize_to_width_keep_aspect(frame_a, target_w)
             b = self._resize_to_width_keep_aspect(frame_b, target_w)
             return cv2.vconcat([a, b])
 
-        if mode == "pip":
-            return self._compose_pip(frame_a, frame_b)
+        if mode == "pip" and len(frames) >= 2:
+            return self._compose_pip(frames[0], frames[1])
 
-        return frame_a
+        if mode == "triple" and len(frames) >= 3:
+            return self._compose_triple_grid(frames[:3])
+
+        if mode == "quad" and len(frames) >= 4:
+            return self._compose_quad_grid(frames[:4])
+
+        return frames[0]
 
     def _compose_pip(self, base_frame, inset_frame):
         base = base_frame.copy()
@@ -160,6 +173,62 @@ class PreviewService:
         cv2.rectangle(base, (x1 - 3, y1 - 3), (x2 + 3, y2 + 3), (255, 255, 255), 2)
         base[y1:y2, x1:x2] = inset
         return base
+
+    def _compose_triple_grid(self, frames):
+        frame_tl = frames[0]
+        frame_bl = frames[1]
+        frame_br = frames[2]
+
+        cell_w = 640
+        cell_h = 360
+
+        tl = self._fit_and_pad(frame_tl, cell_w, cell_h)
+        blank = self._blank_cell(cell_w, cell_h)
+        bl = self._fit_and_pad(frame_bl, cell_w, cell_h)
+        br = self._fit_and_pad(frame_br, cell_w, cell_h)
+
+        top_row = cv2.hconcat([tl, blank])
+        bottom_row = cv2.hconcat([bl, br])
+        return cv2.vconcat([top_row, bottom_row])
+
+    def _compose_quad_grid(self, frames):
+        frame_tl = frames[0]
+        frame_tr = frames[1]
+        frame_bl = frames[2]
+        frame_br = frames[3]
+
+        cell_w = 640
+        cell_h = 360
+
+        tl = self._fit_and_pad(frame_tl, cell_w, cell_h)
+        tr = self._fit_and_pad(frame_tr, cell_w, cell_h)
+        bl = self._fit_and_pad(frame_bl, cell_w, cell_h)
+        br = self._fit_and_pad(frame_br, cell_w, cell_h)
+
+        top_row = cv2.hconcat([tl, tr])
+        bottom_row = cv2.hconcat([bl, br])
+        return cv2.vconcat([top_row, bottom_row])
+
+    def _blank_cell(self, width, height):
+        return cv2.cvtColor(
+            cv2.resize(
+                cv2.UMat(height, width, cv2.CV_8UC1).get(),
+                (width, height)
+            ),
+            cv2.COLOR_GRAY2BGR
+        )
+
+    def _fit_and_pad(self, frame, box_w, box_h):
+        fitted = self._fit_inside_box(frame, box_w, box_h)
+        h, w = fitted.shape[:2]
+
+        canvas = self._blank_cell(box_w, box_h)
+
+        x = (box_w - w) // 2
+        y = (box_h - h) // 2
+
+        canvas[y:y + h, x:x + w] = fitted
+        return canvas
 
     def _fit_inside_box(self, frame, box_w, box_h):
         h, w = frame.shape[:2]
@@ -190,13 +259,12 @@ class PreviewService:
                 pass
             self.preview_job = None
 
-        if self.capture_a is not None:
-            self.capture_a.release()
-            self.capture_a = None
-
-        if self.capture_b is not None:
-            self.capture_b.release()
-            self.capture_b = None
+        for cap in self.captures:
+            try:
+                cap.release()
+            except Exception:
+                pass
+        self.captures = []
 
         self.preview_image_ref = None
 

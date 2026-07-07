@@ -156,11 +156,54 @@ def install_pkg(pkg_name: str):
 #
 #     subprocess.run(["sudo", "installer", "-pkg", str(pkg), "-target", "/"], check=True)
 
+# def copy_obs_scene_config():
+#     src = _resource_path("CamComposite-OBS.json")
+#     if not src.exists():
+#         raise FileNotFoundError(f"OBS config not found: {src}")
+#
+#     dst_dir = Path.home() / "Library/Application Support/obs-studio/basic/scenes"
+#     dst_dir.mkdir(parents=True, exist_ok=True)
+#     shutil.copy2(src, dst_dir / "CamComposite.json")
+
+def copy_obs_profile_config():
+    src = _resource_path("basic.ini")
+    if not src.exists():
+        raise FileNotFoundError(f"OBS profile config not found: {src}")
+
+    dst_dir = Path.home() / "Library/Application Support/obs-studio/basic/profiles/CamComposite"
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    shutil.copy2(src, dst_dir / "basic.ini")
+
 def copy_obs_scene_config():
+    import json
+    import socket
+
     src = _resource_path("CamComposite-OBS.json")
     if not src.exists():
         raise FileNotFoundError(f"OBS config not found: {src}")
 
     dst_dir = Path.home() / "Library/Application Support/obs-studio/basic/scenes"
     dst_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst_dir / "CamComposite.json")
+
+    dst_file = dst_dir / "CamComposite.json"
+
+    # Load bundled OBS scene JSON
+    with open(src, "r", encoding="utf-8") as f:
+        scene_config = json.load(f)
+
+    # Current Mac hostname format OBS/NDI usually stores
+    hostname = socket.gethostname().split(".")[0].upper()
+    current_ndi_name = f"{hostname}.LOCAL (MyLens Program)"
+
+    # Patch NDI source name inside OBS config
+    for source in scene_config.get("sources", []):
+        if source.get("id") == "ndi_source" and source.get("name") == "MyLens":
+            source.setdefault("settings", {})
+            source["settings"]["ndi_source_name"] = current_ndi_name
+
+    # Save patched scene config
+    with open(dst_file, "w", encoding="utf-8") as f:
+        json.dump(scene_config, f, indent=4)
+
+    print(f"OBS scene copied and patched with NDI source: {current_ndi_name}")

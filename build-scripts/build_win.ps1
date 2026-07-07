@@ -15,7 +15,7 @@ $FINAL_EXE = "release\CamComposite-win-v$VERSION.exe"
 $INNO_SCRIPT = "packaging\win\CamComposite.iss"
 
 # Adjust this only if your Inno Setup is installed somewhere else
-$ISCC = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+$ISCC = "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
 
 if (!(Test-Path $ISCC)) {
     Write-Host ""
