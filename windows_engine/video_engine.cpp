@@ -232,17 +232,16 @@ class CameraReader
 public:
     CameraReader(int index) : cameraIndex(index) {}
 
-    bool start()
+    void startAsync()
     {
-        if (!openCamera())
+        bool expected = false;
+        if (!started.compare_exchange_strong(expected, true))
         {
-            std::cerr << "Failed to open camera index " << cameraIndex << "\n";
-            return false;
+            return;
         }
 
         running = true;
         worker = std::thread(&CameraReader::loop, this);
-        return true;
     }
 
     bool readLatest(cv::Mat& out)
@@ -258,6 +257,16 @@ public:
         return true;
     }
 
+    bool isReady() const
+    {
+        return ready.load();
+    }
+
+    bool hasFailed() const
+    {
+        return failed.load();
+    }
+
     void stop()
     {
         running = false;
@@ -271,6 +280,8 @@ public:
         {
             cap.release();
         }
+
+        ready = false;
     }
 
     ~CameraReader()
@@ -281,7 +292,10 @@ public:
 private:
     int cameraIndex;
     cv::VideoCapture cap;
+    std::atomic<bool> started{false};
     std::atomic<bool> running{false};
+    std::atomic<bool> ready{false};
+    std::atomic<bool> failed{false};
     std::thread worker;
     std::mutex frameMutex;
     cv::Mat latestFrame;
@@ -294,14 +308,17 @@ private:
             cap.release();
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        ready = false;
+        failed = false;
 
-        std::cout << "Opening camera index " << cameraIndex << "...\n";
+        std::cout << "Opening camera index " << cameraIndex << " in background...\n";
 
         cap.open(cameraIndex, cv::CAP_DSHOW);
 
         if (!cap.isOpened())
         {
+            std::cerr << "Failed to open camera index " << cameraIndex << "\n";
+            failed = true;
             return false;
         }
 
@@ -320,6 +337,12 @@ private:
 
     void loop()
     {
+        if (!openCamera())
+        {
+            running = false;
+            return;
+        }
+
         while (running)
         {
             cv::Mat frame;
@@ -329,8 +352,13 @@ private:
             {
                 failedReads = 0;
 
-                std::lock_guard<std::mutex> lock(frameMutex);
-                latestFrame = frame.clone();
+                {
+                    std::lock_guard<std::mutex> lock(frameMutex);
+                    latestFrame = frame.clone();
+                }
+
+                ready = true;
+                failed = false;
             }
             else
             {
@@ -338,7 +366,7 @@ private:
 
                 if (failedReads >= 60)
                 {
-                    std::cerr << "Camera " << cameraIndex << " stalled. Reopening...\n";
+                    std::cerr << "Camera " << cameraIndex << " stalled. Reopening in background...\n";
                     openCamera();
                     failedReads = 0;
                 }
@@ -346,6 +374,13 @@ private:
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
         }
+
+        if (cap.isOpened())
+        {
+            cap.release();
+        }
+
+        ready = false;
     }
 };
 
@@ -590,20 +625,6 @@ void syncReaders(
 {
     std::set<int> wanted(requestedIndexes.begin(), requestedIndexes.end());
 
-    for (auto it = readers.begin(); it != readers.end();)
-    {
-        if (wanted.find(it->first) == wanted.end())
-        {
-            std::cout << "Closing camera index " << it->first << "\n";
-            it->second->stop();
-            it = readers.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
-    }
-
     for (int index : requestedIndexes)
     {
         if (readers.find(index) != readers.end())
@@ -611,17 +632,32 @@ void syncReaders(
             continue;
         }
 
-        std::cout << "Adding camera index " << index << "\n";
+        std::cout << "Adding camera index " << index << " without blocking compositor\n";
 
         auto reader = std::make_unique<CameraReader>(index);
-
-        if (!reader->start())
-        {
-            std::cerr << "Warning: camera " << index << " failed to start. Using black tile.\n";
-            continue;
-        }
+        reader->startAsync();
 
         readers[index] = std::move(reader);
+    }
+
+    for (auto it = readers.begin(); it != readers.end();)
+    {
+        if (wanted.find(it->first) == wanted.end())
+        {
+            std::cout << "Removing camera index " << it->first << " from layout\n";
+
+            std::unique_ptr<CameraReader> removedReader = std::move(it->second);
+            it = readers.erase(it);
+
+            std::thread closer([reader = std::move(removedReader)]() mutable {
+                reader->stop();
+            });
+            closer.detach();
+        }
+        else
+        {
+            ++it;
+        }
     }
 }
 
@@ -681,7 +717,7 @@ int main(int argc, char** argv)
 
                 if (camerasChanged)
                 {
-                    std::cout << "Camera selection changed. Syncing readers without full restart.\n";
+                    std::cout << "Camera selection changed. Syncing readers without blocking compositor.\n";
                     syncReaders(readers, requestedControl.cameraIndexes);
                 }
 
