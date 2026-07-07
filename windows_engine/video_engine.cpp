@@ -37,6 +37,7 @@ struct EngineControl
 {
     std::string mode;
     std::vector<int> cameraIndexes;
+    bool broadcasting = false;
 };
 
 class SharedFrameWriter
@@ -111,9 +112,22 @@ public:
         shared->writing = 0;
         shared->readableBufferIndex = 0;
         shared->frameIndex = 0;
+        shared->broadcasting = 0;
 
         std::cout << "Shared frame buffer ready with double buffering\n";
+        std::cout << "Shared frame version: " << CAMCOMP_VERSION << "\n";
         return true;
+    }
+
+    void setBroadcasting(bool enabled)
+    {
+        if (!shared)
+        {
+            return;
+        }
+
+        shared->broadcasting = enabled ? 1 : 0;
+        MemoryBarrier();
     }
 
     void writeBgrFrame(const cv::Mat& bgrFrame)
@@ -554,6 +568,16 @@ EngineControl readControlFile(const EngineControl& fallback)
                 control.cameraIndexes = parsed;
             }
         }
+        else if (line.rfind("broadcasting=", 0) == 0)
+        {
+            std::string value = trim(line.substr(13));
+            control.broadcasting = (value == "1" || value == "true" || value == "yes");
+        }
+        else if (line.rfind("broadcast=", 0) == 0)
+        {
+            std::string value = trim(line.substr(10));
+            control.broadcasting = (value == "1" || value == "true" || value == "yes");
+        }
     }
 
     return control;
@@ -618,6 +642,8 @@ int main(int argc, char** argv)
         activeControl.cameraIndexes.push_back(std::stoi(argv[i]));
     }
 
+    activeControl.broadcasting = false;
+
     SharedFrameWriter sharedWriter;
     if (!sharedWriter.open())
     {
@@ -625,10 +651,13 @@ int main(int argc, char** argv)
         return 3;
     }
 
+    sharedWriter.setBroadcasting(activeControl.broadcasting);
+
     std::map<int, std::unique_ptr<CameraReader>> readers;
     syncReaders(readers, activeControl.cameraIndexes);
 
     std::cout << "Started engine. Mode: " << activeControl.mode << "\n";
+    std::cout << "Initial broadcasting: " << (activeControl.broadcasting ? "ON" : "OFF") << "\n";
     std::cout << "Running continuous compositor. Press Ctrl+C to stop.\n";
 
     int frameCounter = 0;
@@ -641,8 +670,9 @@ int main(int argc, char** argv)
 
             bool modeChanged = requestedControl.mode != activeControl.mode;
             bool camerasChanged = requestedControl.cameraIndexes != activeControl.cameraIndexes;
+            bool broadcastingChanged = requestedControl.broadcasting != activeControl.broadcasting;
 
-            if (modeChanged || camerasChanged)
+            if (modeChanged || camerasChanged || broadcastingChanged)
             {
                 if (modeChanged)
                 {
@@ -655,7 +685,15 @@ int main(int argc, char** argv)
                     syncReaders(readers, requestedControl.cameraIndexes);
                 }
 
+                if (broadcastingChanged)
+                {
+                    std::cout << "Broadcasting changed to: "
+                              << (requestedControl.broadcasting ? "ON" : "OFF")
+                              << "\n";
+                }
+
                 activeControl = requestedControl;
+                sharedWriter.setBroadcasting(activeControl.broadcasting);
             }
         }
 
@@ -695,6 +733,8 @@ int main(int argc, char** argv)
                       << activeControl.cameraIndexes.size()
                       << ". Mode: "
                       << activeControl.mode
+                      << ". Broadcasting: "
+                      << (activeControl.broadcasting ? "ON" : "OFF")
                       << "\n";
         }
 

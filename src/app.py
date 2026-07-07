@@ -472,12 +472,12 @@ class CamCompositeApp(tk.Tk):
             return
 
         try:
-            # If the camera set is the same, this only updates control.txt.
-            # It should NOT restart video_engine.exe.
+            # While broadcasting, update mode/cameras and keep broadcasting ON.
             self.windows_engine_service.start(
                 self.mode_var.get(),
                 self.selected_cameras,
                 force_restart=False,
+                broadcasting=True,
             )
 
             if self.windows_shared_preview_service is not None:
@@ -526,13 +526,13 @@ class CamCompositeApp(tk.Tk):
                 if self.windows_engine_service is None:
                     raise RuntimeError("Windows C++ video engine is not available.")
 
-                # Do NOT restart cameras here.
-                # If the preview engine is already running with the same cameras,
-                # WindowsEngineService.start() only updates control.txt.
+                # Same engine keeps running.
+                # Only flip broadcasting=1 so DirectShow starts outputting live frames.
                 self.windows_engine_service.start(
                     self.mode_var.get(),
                     self.selected_cameras,
                     force_restart=False,
+                    broadcasting=True,
                 )
 
                 if self.windows_shared_preview_service is not None:
@@ -625,6 +625,7 @@ class CamCompositeApp(tk.Tk):
                     self.mode_var.get(),
                     self.selected_cameras,
                     force_restart=False,
+                    broadcasting=False,
                 )
 
                 self.after(700, self._check_windows_preview_engine_started)
@@ -672,14 +673,20 @@ class CamCompositeApp(tk.Tk):
             print(f"OBS stop warning: {e}")
 
         if self.current_os == "Windows":
-            if self.windows_shared_preview_service is not None:
-                self.windows_shared_preview_service.stop(clear_canvas=True)
-
-            # Stop engine first so Zoom stops receiving active frames.
+            # Do NOT stop video_engine.exe.
+            # Keep cameras warm for preview, but flip broadcasting=0.
             if self.windows_engine_service is not None:
-                self.windows_engine_service.stop()
+                self.windows_engine_service.start(
+                    self.mode_var.get(),
+                    self.selected_cameras,
+                    force_restart=False,
+                    broadcasting=False,
+                )
 
             self.preview_service.stop()
+
+            if self.windows_shared_preview_service is not None:
+                self.windows_shared_preview_service.start()
 
         else:
             self.preview_service.stop()
@@ -691,12 +698,6 @@ class CamCompositeApp(tk.Tk):
         self.status_var.set("Stopped")
         self.preview_text_var.set(f"{self._layout_label(self.mode_var.get())} preview will appear here")
         self.clear_footer_message()
-
-        # Do not auto-restart preview after Stop on Windows.
-        # If we restart engine-backed preview here, Cam-Composite will keep showing frames in Zoom.
-        if self.current_os == "Windows":
-            self.preview_text_var.set("Broadcast stopped")
-            self._show_stopped_message()
 
     def _show_stopped_message(self):
         if hasattr(self, "preview_canvas"):

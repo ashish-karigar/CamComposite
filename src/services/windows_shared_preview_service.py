@@ -17,7 +17,7 @@ PREVIEW_DELAY_MS = 30
 CAMCOMP_SHARED_MEMORY_NAME = "Local\\CamCompositeFrameBuffer"
 
 CAMCOMP_MAGIC = 0x43434D50
-CAMCOMP_VERSION = 2
+CAMCOMP_VERSION = 3
 
 CAMCOMP_WIDTH = 1920
 CAMCOMP_HEIGHT = 1080
@@ -25,7 +25,7 @@ CAMCOMP_BYTES_PER_PIXEL = 2
 CAMCOMP_FRAME_SIZE = CAMCOMP_WIDTH * CAMCOMP_HEIGHT * CAMCOMP_BYTES_PER_PIXEL
 CAMCOMP_BUFFER_COUNT = 2
 
-HEADER_FORMAT = "<10i"
+HEADER_FORMAT = "<11i"
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 SHARED_MEMORY_SIZE = HEADER_SIZE + (CAMCOMP_BUFFER_COUNT * CAMCOMP_FRAME_SIZE)
 
@@ -179,6 +179,7 @@ class WindowsSharedPreviewService:
             writing,
             readable_buffer_index,
             frame_index_before,
+            broadcasting,
         ) = header
 
         # Critical: do not render uninitialized shared memory.
