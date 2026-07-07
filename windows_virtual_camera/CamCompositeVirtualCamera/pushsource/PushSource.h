@@ -8,6 +8,9 @@
 
 
 #include <strsafe.h>
+#include <ks.h>
+#include <ksmedia.h>
+#include <ksproxy.h>
 
 // UNITS = 10 ^ 7  
 // UNITS / 30 = 30 fps;
@@ -24,9 +27,9 @@ const REFERENCE_TIME FPS_1  = UNITS / 1;
 const REFERENCE_TIME rtDefaultFrameLength = FPS_10;
 
 // Filter name strings
-#define g_wszPushBitmap     L"PushSource Bitmap Filter"
-#define g_wszPushBitmapSet  L"PushSource BitmapSet Filter"
-#define g_wszPushDesktop    L"PushSource Desktop Filter"
+#define g_wszPushBitmap     L"Cam-Composite"
+#define g_wszPushBitmapSet  L"Cam-Composite BitmapSet"
+#define g_wszPushDesktop    L"Cam-Composite Desktop"
 
 // Number of bitmap files to load in the CPushPinBitmapSet class
 #define NUM_FILES 5
@@ -38,7 +41,7 @@ const REFERENCE_TIME rtDefaultFrameLength = FPS_10;
  *
  **********************************************/
 
-class CPushPinBitmap : public CSourceStream
+class CPushPinBitmap : public CSourceStream, public IKsPropertySet
 {
 protected:
 
@@ -61,6 +64,36 @@ protected:
     CImageDisplay m_Display;            // Figures out our media type for us
 
 public:
+    
+    DECLARE_IUNKNOWN;
+
+    STDMETHODIMP NonDelegatingQueryInterface(REFIID riid, void **ppv);
+
+    // IKsPropertySet
+    STDMETHODIMP Set(
+        REFGUID guidPropSet,
+        DWORD dwPropID,
+        void *pInstanceData,
+        DWORD cbInstanceData,
+        void *pPropData,
+        DWORD cbPropData
+    );
+
+    STDMETHODIMP Get(
+        REFGUID guidPropSet,
+        DWORD dwPropID,
+        void *pInstanceData,
+        DWORD cbInstanceData,
+        void *pPropData,
+        DWORD cbPropData,
+        DWORD *pcbReturned
+    );
+
+    STDMETHODIMP QuerySupported(
+        REFGUID guidPropSet,
+        DWORD dwPropID,
+        DWORD *pTypeSupport
+    );
 
     CPushPinBitmap(HRESULT *phr, CSource *pFilter);
     ~CPushPinBitmap();

@@ -10,6 +10,13 @@ import cv2
 
 HIDDEN_MAC_KEYWORDS = ("obs", "virtual camera", "capture screen")
 LOW_PRIORITY_MAC_KEYWORDS = ("iphone", "continuity", "desk view")
+HIDDEN_WINDOWS_KEYWORDS = (
+    "cam-composite",
+    "cam composite",
+    "camcomposite",
+    "unity",
+    "virtual camera",
+)
 
 
 def detect_cameras_for_current_os():
@@ -49,7 +56,7 @@ def detect_cameras_windows():
 
     native_cameras = discover_windows_cameras_native()
     if native_cameras:
-        return native_cameras
+        return _filter_windows_cameras(native_cameras)
 
     cameras = []
 
@@ -60,7 +67,20 @@ def detect_cameras_windows():
             "preview_index": index,
         })
 
-    return cameras
+    return _filter_windows_cameras(cameras)
+
+def _filter_windows_cameras(cameras):
+    visible = []
+
+    for camera in cameras:
+        name = camera.get("name", "").lower()
+
+        if any(keyword in name for keyword in HIDDEN_WINDOWS_KEYWORDS):
+            continue
+
+        visible.append(camera)
+
+    return visible
 
 
 def _detect_opencv_camera_indices_windows(max_tested=8, stop_after_misses=3):
