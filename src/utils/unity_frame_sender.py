@@ -1,22 +1,31 @@
-# src/utils/unity_frame_sender.py
-
 import threading
 import time
 
 import cv2
+import numpy as np
 import pyvirtualcam
 from pyvirtualcam import PixelFormat
 
+try:
+    from constants import get_video_profile
+except ImportError:
+    from src.constants import get_video_profile
+
+
+PROFILE = get_video_profile()
+OUTPUT_W = PROFILE["width"]
+OUTPUT_H = PROFILE["height"]
+OUTPUT_FPS = PROFILE["fps"]
+
 
 class UnityFrameSender:
-    def __init__(self, fps=30):
+    def __init__(self, fps=OUTPUT_FPS, width=OUTPUT_W, height=OUTPUT_H):
         self.fps = fps
+        self.width = width
+        self.height = height
 
         self.cam = None
         self.running = False
-
-        self.width = None
-        self.height = None
 
         self.latest_frame = None
         self.frame_lock = threading.Lock()
@@ -31,28 +40,15 @@ class UnityFrameSender:
         self.thread.start()
 
     def send_frame(self, frame_bgr):
-        if frame_bgr is None:
+        if frame_bgr is None or frame_bgr.size == 0:
             return
 
-        h, w = frame_bgr.shape[:2]
-
-        if self.width is None or self.height is None:
-            self.width = w
-            self.height = h
-
-        if w != self.width or h != self.height:
-            frame_bgr = cv2.resize(frame_bgr, (self.width, self.height))
+        frame_bgr = self._fit_and_pad(frame_bgr, self.width, self.height)
 
         with self.frame_lock:
-            self.latest_frame = frame_bgr.copy()
+            self.latest_frame = frame_bgr
 
     def _run(self):
-        while self.running and (self.width is None or self.height is None):
-            time.sleep(0.01)
-
-        if not self.running:
-            return
-
         try:
             with pyvirtualcam.Camera(
                 width=self.width,
@@ -67,17 +63,18 @@ class UnityFrameSender:
                     f'({self.width}x{self.height}@{cam.fps})'
                 )
 
+                blank = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+
                 while self.running:
-                    frame_to_send = None
-
                     with self.frame_lock:
-                        if self.latest_frame is not None:
-                            frame_to_send = self.latest_frame.copy()
+                        frame_to_send = (
+                            self.latest_frame.copy()
+                            if self.latest_frame is not None
+                            else blank
+                        )
 
-                    if frame_to_send is not None:
-                        rgb_frame = cv2.cvtColor(frame_to_send, cv2.COLOR_BGR2RGB)
-                        cam.send(rgb_frame)
-
+                    rgb_frame = cv2.cvtColor(frame_to_send, cv2.COLOR_BGR2RGB)
+                    cam.send(rgb_frame)
                     cam.sleep_until_next_frame()
 
         except Exception as e:
@@ -85,6 +82,25 @@ class UnityFrameSender:
 
         finally:
             self.cam = None
+
+    def _fit_and_pad(self, frame, box_w, box_h):
+        h, w = frame.shape[:2]
+
+        if h <= 0 or w <= 0:
+            return np.zeros((box_h, box_w, 3), dtype=np.uint8)
+
+        scale = min(box_w / w, box_h / h)
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        canvas = np.zeros((box_h, box_w, 3), dtype=np.uint8)
+
+        x = (box_w - new_w) // 2
+        y = (box_h - new_h) // 2
+        canvas[y:y + new_h, x:x + new_w] = resized
+
+        return canvas
 
     def stop(self):
         self.running = False
@@ -94,6 +110,4 @@ class UnityFrameSender:
 
         self.thread = None
         self.latest_frame = None
-        self.width = None
-        self.height = None
         self.cam = None

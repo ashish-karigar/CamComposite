@@ -13,9 +13,16 @@ from ui import (
 )
 
 from services import detect_cameras_for_current_os, PreviewService
-# from src.utils.obs_mac_controller import MacOBSController
-# from src.utils.ndi_frame_sender import NDIFrameSender
-# from src.utils.unity_frame_sender import UnityFrameSender
+
+try:
+    from src.services.windows_engine_service import WindowsEngineService
+except ImportError:
+    WindowsEngineService = None
+
+try:
+    from src.services.windows_shared_preview_service import WindowsSharedPreviewService
+except ImportError:
+    WindowsSharedPreviewService = None
 
 
 class CamCompositeApp(tk.Tk):
@@ -40,8 +47,9 @@ class CamCompositeApp(tk.Tk):
 
         self.obs_controller = None
 
-        if platform.system() == "Darwin":
+        if self.current_os == "Darwin":
             from src.utils.obs_mac_controller import MacOBSController
+
             self.obs_controller = MacOBSController(
                 scene_name="CamComposite",
                 port=4455,
@@ -63,17 +71,33 @@ class CamCompositeApp(tk.Tk):
         self.after(200, self.detect_cameras)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
         self.preview_service = PreviewService(self)
+        self.windows_shared_preview_service = None
         self.frame_forwarder = None
+        self.windows_engine_service = None
 
         if self.current_os == "Darwin":
             from src.utils.ndi_frame_sender import NDIFrameSender
-            self.frame_forwarder = NDIFrameSender()
-        elif self.current_os == "Windows":
-            from src.utils.unity_frame_sender import UnityFrameSender
-            self.frame_forwarder = UnityFrameSender()
 
-        self.preview_service.set_frame_forwarder(self.frame_forwarder)
+            self.frame_forwarder = NDIFrameSender()
+            self.preview_service.set_frame_forwarder(self.frame_forwarder)
+
+        elif self.current_os == "Windows":
+            if WindowsEngineService is not None:
+                self.windows_engine_service = WindowsEngineService()
+
+            if WindowsSharedPreviewService is not None:
+                self.windows_shared_preview_service = WindowsSharedPreviewService(self)
+
+            # Windows:
+            # video_engine.exe -> shared memory -> app preview before Start
+            # video_engine.exe -> shared memory -> Cam-Composite DirectShow after Start
+            self.frame_forwarder = None
+            self.preview_service.set_frame_forwarder(None)
+
+        else:
+            self.preview_service.set_frame_forwarder(None)
 
     def _selected_camera_objects(self):
         selected = []
@@ -83,6 +107,25 @@ class CamCompositeApp(tk.Tk):
                     selected.append(cam)
                     break
         return selected
+
+    def _check_windows_preview_engine_started(self):
+        if self.current_os != "Windows":
+            return
+
+        if self.pipeline_running:
+            return
+
+        if self.windows_engine_service is None:
+            return
+
+        exit_code = self.windows_engine_service.get_exit_code()
+
+        if exit_code is not None:
+            self.preview_text_var.set("Preview unavailable")
+            self.set_footer_message(
+                f"Windows video engine exited early. Check windows_engine/build/runtime/video_engine.log",
+                is_error=True,
+            )
 
     def _build_layout(self):
         root = ttk.Frame(self, style="App.TFrame", padding=22)
@@ -103,7 +146,9 @@ class CamCompositeApp(tk.Tk):
     def set_footer_message(self, message, is_error=False):
         self.footer_message_var.set(message)
         if hasattr(self, "footer_label"):
-            self.footer_label.configure(foreground=(self.colors["error"] if is_error else self.colors["muted"]))
+            self.footer_label.configure(
+                foreground=(self.colors["error"] if is_error else self.colors["muted"])
+            )
 
     def clear_footer_message(self):
         self.set_footer_message("Developed by - @ashish.karigar", is_error=False)
@@ -112,7 +157,7 @@ class CamCompositeApp(tk.Tk):
         if self.current_os == "Darwin":
             self.setup_var.set("macOS backend available")
         elif self.current_os == "Windows":
-            self.setup_var.set("Windows backend available")
+            self.setup_var.set("Windows DirectShow backend available")
         else:
             self.setup_var.set(f"Unsupported or untested platform: {self.current_os}")
 
@@ -120,7 +165,10 @@ class CamCompositeApp(tk.Tk):
         if self.current_os == "Darwin":
             self.setup_var.set("macOS setup looks ready to be connected")
         elif self.current_os == "Windows":
-            self.setup_var.set("Windows setup check will be connected next")
+            if self.windows_engine_service is None:
+                self.setup_var.set("Windows video engine service unavailable")
+            else:
+                self.setup_var.set("Windows DirectShow setup looks ready")
         else:
             self.setup_var.set("Unsupported platform for automated setup checks")
 
@@ -182,16 +230,24 @@ class CamCompositeApp(tk.Tk):
             self.selected_cameras = [only_id]
             self.mode_var.set("single")
             self._set_layout_state(disable=True)
-            self.preview_text_var.set("Single camera detected and selected automatically")
-            self.after(100, self.refresh_preview)
+
+            if self.pipeline_running and self.current_os == "Windows":
+                self._show_broadcasting_message()
+            else:
+                self.preview_text_var.set("Single camera detected and selected automatically")
+                self.after(100, self.refresh_preview)
         else:
             first_id = str(self.detected_cameras[0]["id"])
             self.camera_check_vars[first_id].set(True)
             self.selected_cameras = [first_id]
             self.mode_var.set("single")
             self._set_layout_state(disable=False)
-            self.preview_text_var.set(f"Selected: {self._camera_name_from_id(first_id)}")
-            self.after(100, self.refresh_preview)
+
+            if self.pipeline_running and self.current_os == "Windows":
+                self._show_broadcasting_message()
+            else:
+                self.preview_text_var.set(f"Selected: {self._camera_name_from_id(first_id)}")
+                self.after(100, self.refresh_preview)
 
     def _on_camera_checkbox_toggle(self, cam_id):
         selected = [cid for cid, var in self.camera_check_vars.items() if var.get()]
@@ -208,6 +264,12 @@ class CamCompositeApp(tk.Tk):
         if len(self.detected_cameras) == 1:
             self.mode_var.set("single")
             self._set_layout_state(disable=True)
+
+            if self.pipeline_running and self.current_os == "Windows":
+                self._restart_windows_engine_if_running()
+            else:
+                self.refresh_preview()
+
             return
 
         selected_count = len(self.selected_cameras)
@@ -223,12 +285,16 @@ class CamCompositeApp(tk.Tk):
         self._refresh_layout_tiles()
 
         names = [self._camera_name_from_id(cid) for cid in self.selected_cameras]
-        if names:
-            self.preview_text_var.set("Selected: " + ", ".join(names))
-        else:
-            self.preview_text_var.set("No cameras selected")
 
-        self.refresh_preview()
+        if self.pipeline_running and self.current_os == "Windows":
+            self._restart_windows_engine_if_running()
+        else:
+            if names:
+                self.preview_text_var.set("Selected: " + ", ".join(names))
+            else:
+                self.preview_text_var.set("No cameras selected")
+
+            self.refresh_preview()
 
     def _camera_name_from_id(self, cam_id):
         for cam in self.detected_cameras:
@@ -249,6 +315,14 @@ class CamCompositeApp(tk.Tk):
             print(f"Preview close warning: {e}")
 
         try:
+            if self.windows_shared_preview_service is not None:
+                self.windows_shared_preview_service.stop(clear_canvas=True)
+        except Exception as e:
+            print(f"Windows shared preview close warning: {e}")
+
+        try:
+            if self.windows_engine_service is not None:
+                self.windows_engine_service.stop()
             if self.frame_forwarder is not None:
                 self.frame_forwarder.stop()
         except Exception as e:
@@ -299,9 +373,16 @@ class CamCompositeApp(tk.Tk):
 
         self.mode_var.set(mode_key)
         self._refresh_layout_tiles()
-        self.preview_text_var.set(f"{self._layout_label(mode_key)} selected")
         self.clear_footer_message()
-        self.refresh_preview()
+
+        if self.current_os == "Windows":
+            if self.pipeline_running:
+                self._restart_windows_engine_if_running()
+            else:
+                self.refresh_preview()
+        else:
+            self.preview_text_var.set(f"{self._layout_label(mode_key)} selected")
+            self.refresh_preview()
 
     def _set_layout_state(self, disable=False):
         self.layout_disabled = disable
@@ -338,9 +419,16 @@ class CamCompositeApp(tk.Tk):
 
         self.selected_cameras[0], self.selected_cameras[1] = self.selected_cameras[1], self.selected_cameras[0]
         self.swapped_var.set(not self.swapped_var.get())
-        self.preview_text_var.set("Camera feeds swapped")
         self.clear_footer_message()
-        self.refresh_preview()
+
+        if self.current_os == "Windows":
+            if self.pipeline_running:
+                self._restart_windows_engine_if_running()
+            else:
+                self.refresh_preview()
+        else:
+            self.preview_text_var.set("Camera feeds swapped")
+            self.refresh_preview()
 
         if self.pipeline_running:
             mode = self.mode_var.get()
@@ -349,6 +437,61 @@ class CamCompositeApp(tk.Tk):
                 f"{self._camera_name_from_id(self.selected_cameras[1])}, "
                 f"{self._layout_label(mode)}"
             )
+
+    def _show_broadcasting_message(self):
+        self.preview_text_var.set("Broadcast started")
+
+        if hasattr(self, "preview_canvas"):
+            self.preview_canvas.delete("all")
+
+        if hasattr(self, "preview_text_label"):
+            self.preview_text_label.configure(
+                font=("Helvetica", 12, "normal"),
+                fg=self.colors["muted"],
+            )
+            self.preview_text_label.place(relx=0.5, rely=0.5, anchor="center")
+
+    def _reset_preview_message_style(self):
+        if hasattr(self, "preview_text_label"):
+            self.preview_text_label.configure(
+                font=("Helvetica", 20, "bold"),
+                fg=self.colors["text"],
+            )
+
+    def _restart_windows_engine_if_running(self):
+        if self.current_os != "Windows":
+            return
+
+        if not self.pipeline_running:
+            return
+
+        if self.windows_engine_service is None:
+            return
+
+        if not self.selected_cameras:
+            return
+
+        try:
+            # If the camera set is the same, this only updates control.txt.
+            # It should NOT restart video_engine.exe.
+            self.windows_engine_service.start(
+                self.mode_var.get(),
+                self.selected_cameras,
+                force_restart=False,
+            )
+
+            if self.windows_shared_preview_service is not None:
+                self.windows_shared_preview_service.stop(clear_canvas=True)
+
+            self.preview_service.stop()
+            self._show_broadcasting_message()
+
+            self.status_var.set(
+                f"Running: {', '.join([self._camera_name_from_id(cid) for cid in self.selected_cameras])}, "
+                f"{self._layout_label(self.mode_var.get())}"
+            )
+        except Exception as e:
+            self.set_footer_message(f"Could not update Windows engine: {e}", is_error=True)
 
     def start_pipeline(self):
         if self.pipeline_running:
@@ -379,16 +522,34 @@ class CamCompositeApp(tk.Tk):
         try:
             self.clear_footer_message()
 
-            if self.frame_forwarder is not None:
-                self.frame_forwarder.start()
+            if self.current_os == "Windows":
+                if self.windows_engine_service is None:
+                    raise RuntimeError("Windows C++ video engine is not available.")
 
-            # Always run the capture/compositor loop so OBS gets frames,
-            # even when local preview is disabled.
-            self.preview_service.start(
-                self.selected_cameras,
-                self.mode_var.get(),
-                render_local=self.preview_var.get(),
-            )
+                # Do NOT restart cameras here.
+                # If the preview engine is already running with the same cameras,
+                # WindowsEngineService.start() only updates control.txt.
+                self.windows_engine_service.start(
+                    self.mode_var.get(),
+                    self.selected_cameras,
+                    force_restart=False,
+                )
+
+                if self.windows_shared_preview_service is not None:
+                    self.windows_shared_preview_service.stop(clear_canvas=True)
+
+                self.preview_service.stop()
+                self._show_broadcasting_message()
+
+            else:
+                if self.frame_forwarder is not None:
+                    self.frame_forwarder.start()
+
+                self.preview_service.start(
+                    self.selected_cameras,
+                    self.mode_var.get(),
+                    render_local=self.preview_var.get(),
+                )
 
             if self.obs_controller is not None:
                 self.obs_controller.start()
@@ -406,7 +567,6 @@ class CamCompositeApp(tk.Tk):
                 + (f", {self._camera_name_from_id(cam_b)}" if cam_b else "")
                 + f", {self._layout_label(mode)}"
             )
-            self.preview_text_var.set("Preview connected" if self.preview_var.get() else "Local preview disabled")
 
         except Exception as e:
             self.pipeline_running = False
@@ -415,6 +575,10 @@ class CamCompositeApp(tk.Tk):
             except Exception:
                 pass
             try:
+                if self.windows_shared_preview_service is not None:
+                    self.windows_shared_preview_service.stop(clear_canvas=True)
+                if self.windows_engine_service is not None:
+                    self.windows_engine_service.stop()
                 if self.frame_forwarder is not None:
                     self.frame_forwarder.stop()
             except Exception:
@@ -424,57 +588,77 @@ class CamCompositeApp(tk.Tk):
                     self.obs_controller.stop()
             except Exception:
                 pass
+
             self.set_footer_message(str(e), is_error=True)
             self.status_var.set("Stopped")
             self.preview_text_var.set("Preview unavailable")
 
     def refresh_preview(self):
-        if not hasattr(self, "preview_service"):
-            return
-
         if not self.selected_cameras:
             self.preview_text_var.set("No cameras selected")
             return
 
-        try:
-            # If pipeline is running, keep the sender/compositor in sync with current UI state.
+        if self.current_os == "Windows":
             if self.pipeline_running:
-                self.preview_service.start(
-                    self.selected_cameras,
+                if self.windows_shared_preview_service is not None:
+                    self.windows_shared_preview_service.stop(clear_canvas=True)
+                self._show_broadcasting_message()
+                return
+
+            try:
+                if self.windows_engine_service is None:
+                    raise RuntimeError("Windows C++ video engine is not available.")
+
+                if self.windows_shared_preview_service is None:
+                    raise RuntimeError("Windows shared preview service is not available.")
+
+                self._reset_preview_message_style()
+
+                # Do not let old Python preview own cameras on Windows.
+                self.preview_service.stop()
+
+                # Critical:
+                # Do NOT pass self.after(...) as the third argument.
+                # The third argument is force_restart.
+                # This must stay False so the existing video_engine.exe keeps running.
+                self.windows_engine_service.start(
                     self.mode_var.get(),
-                    render_local=self.preview_var.get(),
-                )
-            else:
-                # Before pipeline start, this is just local preview behavior.
-                self.preview_service.start(
                     self.selected_cameras,
-                    self.mode_var.get(),
-                    render_local=True,
+                    force_restart=False,
                 )
+
+                self.after(700, self._check_windows_preview_engine_started)
+
+                self.windows_shared_preview_service.start()
+
+                self.clear_footer_message()
+
+            except Exception as e:
+                if self.windows_shared_preview_service is not None:
+                    self.windows_shared_preview_service.stop(clear_canvas=True)
+
+                self.preview_text_var.set("Preview unavailable")
+                self.set_footer_message(str(e), is_error=True)
+
+            return
+
+        if not hasattr(self, "preview_service"):
+            return
+
+        try:
+            self._reset_preview_message_style()
+
+            self.preview_service.start(
+                self.selected_cameras,
+                self.mode_var.get(),
+                render_local=self.preview_var.get() if self.pipeline_running else True,
+            )
 
             self.clear_footer_message()
         except Exception as e:
             self.preview_service.stop()
             self.preview_text_var.set("Preview unavailable")
             self.set_footer_message(str(e), is_error=True)
-
-    # def _mock_pipeline_start(self):
-    #     mode = self.mode_var.get().strip()
-    #     cam_a = self.selected_cameras[0] if len(self.selected_cameras) >= 1 else ""
-    #     cam_b = self.selected_cameras[1] if len(self.selected_cameras) >= 2 else ""
-    #     preview = self.preview_var.get()
-    #     hide_obs = self.auto_hide_obs_var.get()
-    #
-    #     self.after(
-    #         0,
-    #         lambda: self.status_var.set(
-    #             f"Running: {self._camera_name_from_id(cam_a)}"
-    #             + (f", {self._camera_name_from_id(cam_b)}" if cam_b else "")
-    #             + f", {self._layout_label(mode)}"
-    #         ),
-    #     )
-    #     self.after(0, lambda: self.preview_text_var.set("Preview connected"))
-    #     _ = preview, hide_obs
 
     def stop_pipeline(self):
         if not self.pipeline_running:
@@ -487,15 +671,43 @@ class CamCompositeApp(tk.Tk):
         except Exception as e:
             print(f"OBS stop warning: {e}")
 
-        self.preview_service.stop()
+        if self.current_os == "Windows":
+            if self.windows_shared_preview_service is not None:
+                self.windows_shared_preview_service.stop(clear_canvas=True)
 
-        if self.frame_forwarder is not None:
-            self.frame_forwarder.stop()
+            # Stop engine first so Zoom stops receiving active frames.
+            if self.windows_engine_service is not None:
+                self.windows_engine_service.stop()
+
+            self.preview_service.stop()
+
+        else:
+            self.preview_service.stop()
+
+            if self.frame_forwarder is not None:
+                self.frame_forwarder.stop()
 
         self.pipeline_running = False
         self.status_var.set("Stopped")
         self.preview_text_var.set(f"{self._layout_label(self.mode_var.get())} preview will appear here")
         self.clear_footer_message()
+
+        # Do not auto-restart preview after Stop on Windows.
+        # If we restart engine-backed preview here, Cam-Composite will keep showing frames in Zoom.
+        if self.current_os == "Windows":
+            self.preview_text_var.set("Broadcast stopped")
+            self._show_stopped_message()
+
+    def _show_stopped_message(self):
+        if hasattr(self, "preview_canvas"):
+            self.preview_canvas.delete("all")
+
+        if hasattr(self, "preview_text_label"):
+            self.preview_text_label.configure(
+                font=("Helvetica", 12, "normal"),
+                fg=self.colors["muted"],
+            )
+            self.preview_text_label.place(relx=0.5, rely=0.5, anchor="center")
 
     def detect_cameras(self):
         try:
@@ -518,3 +730,4 @@ class CamCompositeApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Detect Cameras", f"Camera detection failed:\n{e}")
             self.setup_var.set("Camera detection failed")
+            self.preview_text_var.set("Camera detection failed")
