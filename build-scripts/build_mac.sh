@@ -14,6 +14,7 @@ fi
 APP_NAME="CamComposite"
 PKG_ID="com.camcomposite.app"
 FINAL_PKG="release/CamComposite-mac-v${VERSION}.pkg"
+export CAMCOMPOSITE_VERSION="$VERSION"
 
 echo
 echo "Cleaning old build files..."
@@ -69,4 +70,3 @@ find . -name "*.pyc" -delete 2>/dev/null || true
 echo
 echo "Build complete:"
 echo "$FINAL_PKG"
-git add "$FINAL_PKG"

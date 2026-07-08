@@ -1,6 +1,8 @@
+import os
 from PyInstaller.utils.hooks import collect_submodules
 
 hiddenimports = collect_submodules("src") + ["obsws_python", "NDIlib"]
+APP_VERSION = os.environ.get("CAMCOMPOSITE_VERSION", "1.0.0")
 
 a = Analysis(
     ["../src/main.py"],
@@ -64,8 +66,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "CamComposite",
         "CFBundleDisplayName": "CamComposite",
-        "CFBundleShortVersionString": "1.0.0",
-        "CFBundleVersion": "1.0.0",
+        "CFBundleShortVersionString": APP_VERSION,
+        "CFBundleVersion": APP_VERSION,
         "NSCameraUsageDescription": "CamComposite needs camera access to detect and preview connected cameras.",
     },
 )

@@ -71,5 +71,3 @@ Get-ChildItem -Path . -Recurse -Include *.pyc -File -ErrorAction SilentlyContinu
 Write-Host ""
 Write-Host "Build complete:"
 Write-Host $FINAL_EXE
-
-git add $FINAL_EXE
