@@ -2,6 +2,7 @@ import threading
 import traceback
 import tkinter as tk
 import platform
+from ui.app_icon import set_window_icon
 
 from app import CamCompositeApp
 from ui.startup_splash import StartupSplash
@@ -87,6 +88,7 @@ def launch_main_app(root, splash):
 
 if __name__ == "__main__":
     root = tk.Tk()
+    set_window_icon(root)
     root.withdraw()
 
     splash = StartupSplash(root)

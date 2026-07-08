@@ -1,4 +1,3 @@
-# styles.py
 from tkinter import ttk
 
 
@@ -15,48 +14,70 @@ def configure_styles(root, colors):
     style.configure("App.TFrame", background=colors["bg"])
     style.configure("Panel.TFrame", background=colors["panel"])
     style.configure("Inner.TFrame", background=colors["panel_2"])
+    style.configure("Card.TFrame", background=colors["panel_2"])
+    style.configure("Chip.TFrame", background=colors["chip"])
 
     style.configure(
         "Title.TLabel",
         background=colors["bg"],
         foreground=colors["text"],
-        font=("Helvetica", 24, "bold"),
+        font=("Helvetica", 28, "bold"),
     )
+
     style.configure(
         "Subtitle.TLabel",
         background=colors["bg"],
         foreground=colors["muted"],
+        font=("Helvetica", 11),
+    )
+
+    style.configure(
+        "HeaderMeta.TLabel",
+        background=colors["bg"],
+        foreground=colors["muted_2"],
         font=("Helvetica", 10),
     )
+
     style.configure(
         "PanelTitle.TLabel",
         background=colors["panel"],
         foreground=colors["text"],
-        font=("Helvetica", 12, "bold"),
+        font=("Helvetica", 13, "bold"),
     )
+
     style.configure(
         "PanelText.TLabel",
         background=colors["panel"],
         foreground=colors["muted"],
         font=("Helvetica", 10),
     )
+
+    style.configure(
+        "InnerTitle.TLabel",
+        background=colors["panel_2"],
+        foreground=colors["text"],
+        font=("Helvetica", 11, "bold"),
+    )
+
     style.configure(
         "InnerText.TLabel",
         background=colors["panel_2"],
         foreground=colors["muted"],
         font=("Helvetica", 10),
     )
+
     style.configure(
         "Status.TLabel",
         background=colors["bg"],
         foreground=colors["muted"],
         font=("Helvetica", 10),
     )
+
     style.configure(
         "CardValue.TLabel",
         background=colors["panel_2"],
         foreground=colors["text"],
-        font=("Helvetica", 14, "bold"),
+        font=("Helvetica", 13, "bold"),
     )
 
     style.configure(
@@ -64,11 +85,19 @@ def configure_styles(root, colors):
         background=colors["panel"],
         foreground=colors["text"],
         font=("Helvetica", 10),
+        focuscolor=colors["panel"],
     )
+
     style.map(
         "TCheckbutton",
-        background=[("active", colors["panel"])],
-        foreground=[("active", colors["text"])],
+        background=[
+            ("active", colors["panel"]),
+            ("pressed", colors["panel"]),
+        ],
+        foreground=[
+            ("active", colors["text"]),
+            ("pressed", colors["text"]),
+        ],
     )
 
     style.configure(
@@ -77,16 +106,23 @@ def configure_styles(root, colors):
         foreground="white",
         borderwidth=0,
         focusthickness=0,
-        padding=(14, 10),
+        focuscolor=colors["accent"],
+        padding=(16, 11),
         font=("Helvetica", 10, "bold"),
     )
+
     style.map(
         "Primary.TButton",
         background=[
             ("active", colors["accent_hover"]),
             ("pressed", colors["accent_hover"]),
+            ("disabled", colors["border"]),
         ],
-        foreground=[("active", "white")],
+        foreground=[
+            ("active", "white"),
+            ("pressed", "white"),
+            ("disabled", colors["muted"]),
+        ],
     )
 
     style.configure(
@@ -95,16 +131,46 @@ def configure_styles(root, colors):
         foreground=colors["text"],
         borderwidth=0,
         focusthickness=0,
-        padding=(14, 10),
-        font=("Helvetica", 10),
+        focuscolor=colors["panel_2"],
+        padding=(16, 11),
+        font=("Helvetica", 10, "bold"),
     )
+
     style.map(
         "Secondary.TButton",
         background=[
-            ("active", "#262c38"),
-            ("pressed", "#262c38"),
+            ("active", colors["panel_3"]),
+            ("pressed", colors["panel_3"]),
+            ("disabled", colors["border_soft"]),
         ],
-        foreground=[("active", colors["text"])],
+        foreground=[
+            ("active", colors["text"]),
+            ("pressed", colors["text"]),
+            ("disabled", colors["muted"]),
+        ],
+    )
+
+    style.configure(
+        "Danger.TButton",
+        background="#2A1620",
+        foreground="#FCA5A5",
+        borderwidth=0,
+        focusthickness=0,
+        focuscolor="#2A1620",
+        padding=(16, 11),
+        font=("Helvetica", 10, "bold"),
+    )
+
+    style.map(
+        "Danger.TButton",
+        background=[
+            ("active", "#3A1D2A"),
+            ("pressed", "#3A1D2A"),
+        ],
+        foreground=[
+            ("active", "#FCA5A5"),
+            ("pressed", "#FCA5A5"),
+        ],
     )
 
     return style

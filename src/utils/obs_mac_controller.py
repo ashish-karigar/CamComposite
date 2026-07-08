@@ -51,23 +51,28 @@ class MacOBSController:
             print("OBS controller already stopped")
             return
 
-        try:
-            if self.client is not None:
-                self._stop_virtual_camera()
-        except Exception as e:
-            print(f"Could not stop virtual camera cleanly: {e}")
+        client = self.client
+        obs_proc = self.obs_proc
+        obs_was_launched_by_us = self._obs_was_launched_by_us
 
-        try:
-            if self._obs_was_launched_by_us:
-                self._quit_obs_app()
-                self._wait_for_process_exit(self.obs_proc, "OBS", timeout=10)
-        except Exception as e:
-            print(f"Could not quit OBS cleanly: {e}")
-
+        # Mark stopped before cleanup so repeated stop calls do not fight this one.
         self.client = None
         self.obs_proc = None
         self.is_running = False
         self._obs_was_launched_by_us = False
+
+        try:
+            if client is not None:
+                self._stop_virtual_camera(client)
+        except Exception as e:
+            print(f"Could not stop virtual camera cleanly: {e}")
+
+        try:
+            if obs_was_launched_by_us:
+                self._quit_obs_app()
+                self._wait_for_process_exit(obs_proc, "OBS", timeout=10)
+        except Exception as e:
+            print(f"Could not quit OBS cleanly: {e}")
 
         print("OBS pipeline stopped")
 
@@ -107,7 +112,7 @@ class MacOBSController:
                     host=self.host,
                     port=self.port,
                     password=self.password,
-                    timeout=5
+                    timeout=5,
                 )
                 print(f"Connected to OBS on attempt {attempt + 1}")
                 return client
@@ -120,6 +125,9 @@ class MacOBSController:
     def _wait_until_obs_ready(self, retries=30, delay=1.0):
         for attempt in range(retries):
             try:
+                if self.client is None:
+                    raise RuntimeError("OBS websocket client is not connected")
+
                 scenes = self.client.get_scene_list()
                 scene_names = [s["sceneName"] for s in scenes.scenes]
                 print("Available scenes:", scene_names)
@@ -140,6 +148,9 @@ class MacOBSController:
     def _start_virtual_camera(self, retries=10, delay=1.0):
         for attempt in range(retries):
             try:
+                if self.client is None:
+                    raise RuntimeError("OBS websocket client is not connected")
+
                 self.client.start_virtual_cam()
                 print("Virtual camera started")
                 return
@@ -149,13 +160,27 @@ class MacOBSController:
 
         raise RuntimeError("Could not start OBS virtual camera")
 
-    def _stop_virtual_camera(self, retries=10, delay=0.5):
+    def _stop_virtual_camera(self, client, retries=3, delay=0.5):
+        if client is None:
+            return
+
         for attempt in range(retries):
             try:
-                self.client.stop_virtual_cam()
+                client.stop_virtual_cam()
                 print("Virtual camera stopped")
                 return
             except Exception as e:
+                message = str(e)
+
+                # OBS already closing / websocket gone. No point retrying noisily.
+                if (
+                    "Connection to remote host was lost" in message
+                    or "Expecting value" in message
+                    or "not ready" in message
+                ):
+                    print(f"Virtual camera stop skipped: OBS is already closing ({message})")
+                    return
+
                 print(f"Could not stop virtual camera yet... {attempt + 1}/{retries} -> {e}")
                 time.sleep(delay)
 

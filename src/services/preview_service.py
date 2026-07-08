@@ -86,6 +86,55 @@ class PreviewService:
 
         self._update_frame()
 
+    def reorder_active_cameras(self, selected_camera_ids, mode, render_local=True):
+        """
+        Reorder already-open cameras without restarting capture devices.
+
+        Returns True when the reorder was applied safely.
+        Returns False when the requested layout needs a different camera set,
+        so the caller can fall back to a full refresh/start.
+        """
+        if not selected_camera_ids:
+            return False
+
+        required_counts = {
+            "single": 1,
+            "pip": 2,
+            "sbs": 2,
+            "stacked": 2,
+            "triple": 3,
+            "quad": 4,
+        }
+
+        required = required_counts.get(mode, 1)
+        new_active_ids = [str(cam_id) for cam_id in selected_camera_ids[:required]]
+
+        with self.capture_lock:
+            open_ids = set(self.captures.keys())
+
+        old_active_set = set(self.active_camera_ids)
+        new_active_set = set(new_active_ids)
+
+        # Safe reorder only:
+        # same camera set, different order.
+        # No open/release needed, so no camera light blink.
+        if new_active_set != old_active_set:
+            return False
+
+        if not new_active_set.issubset(open_ids):
+            return False
+
+        self.active_camera_ids = new_active_ids
+        self.render_local = render_local
+
+        if self.render_local and hasattr(self.app, "preview_text_label"):
+            self.app.preview_text_label.place_forget()
+
+        if self.preview_job is None:
+            self._update_frame()
+
+        return True
+
     def _is_capture_card(self, camera):
         text = " ".join([
             str(camera.get("name", "")),
@@ -372,6 +421,10 @@ class PreviewService:
                 anchor="nw",
                 image=photo,
             )
+
+            if hasattr(self.app, "draw_preview_camera_badges"):
+                self.app.draw_preview_camera_badges(x, y, img_w, img_h)
+
 
         self.preview_job = self.app.after(PREVIEW_DELAY_MS, self._update_frame)
 
