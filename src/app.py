@@ -563,10 +563,24 @@ class CamCompositeApp(tk.Tk):
 
     def swap_cameras(self):
         if len(self.selected_cameras) < 2:
-            self.set_footer_message("Select at least 2 cameras to swap the first two feeds.", is_error=True)
+            self.set_footer_message(
+                "Select at least 2 cameras to swap or rotate feeds.",
+                is_error=True,
+            )
             return
 
-        self.selected_cameras[0], self.selected_cameras[1] = self.selected_cameras[1], self.selected_cameras[0]
+        if len(self.selected_cameras) == 2:
+            self.selected_cameras[0], self.selected_cameras[1] = (
+                self.selected_cameras[1],
+                self.selected_cameras[0],
+            )
+            self.preview_text_var.set("Camera feeds swapped")
+        else:
+            # Rotate preview order for 3+ cameras:
+            # [0, 1, 2] -> [1, 2, 0] -> [2, 0, 1]
+            self.selected_cameras = self.selected_cameras[1:] + self.selected_cameras[:1]
+            self.preview_text_var.set("Camera feeds rotated")
+
         self.swapped_var.set(not self.swapped_var.get())
         self._refresh_camera_selector_widgets()
         self.clear_footer_message()
@@ -576,13 +590,32 @@ class CamCompositeApp(tk.Tk):
                 self._restart_windows_engine_if_running()
             else:
                 self.refresh_preview()
+
+        elif self.current_os == "Darwin":
+            render_local = not self.pipeline_running
+
+            reordered = False
+            if hasattr(self.preview_service, "reorder_active_cameras"):
+                reordered = self.preview_service.reorder_active_cameras(
+                    self.selected_cameras,
+                    self.mode_var.get(),
+                    render_local=render_local,
+                )
+
+            if self.pipeline_running:
+                self._show_broadcasting_message()
+
+            # Fallback only when the rotate changes which cameras are needed.
+            # Example: 4 selected cameras but Side-by-Side only uses first 2.
+            if not reordered:
+                self.refresh_preview()
+
         else:
-            self.preview_text_var.set("Camera feeds swapped")
             self.refresh_preview()
 
         if self.pipeline_running:
             mode = self.mode_var.get()
-            names = [self._camera_name_from_id(cid) for cid in self.selected_cameras[:2]]
+            names = [self._camera_name_from_id(cid) for cid in self.selected_cameras]
             self.status_var.set(
                 f"Running: {', '.join(names)}, {self._layout_label(mode)}"
             )
