@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +10,7 @@ class WindowsEngineService:
         self.current_camera_ids = []
         self.current_mode = None
         self.current_broadcasting = False
+        self.runtime_base_dir = None
         self.runtime_dir = None
         self.control_file = None
         self.log_file_handle = None
@@ -23,8 +25,8 @@ class WindowsEngineService:
         if exe_path is None:
             raise RuntimeError("Windows video engine executable not found.")
 
-        workdir = exe_path.parent.parent
-        self.runtime_dir = workdir / "runtime"
+        self.runtime_base_dir = self._get_runtime_base_dir()
+        self.runtime_dir = self.runtime_base_dir / "runtime"
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
 
         self.control_file = self.runtime_dir / "control.txt"
@@ -49,7 +51,7 @@ class WindowsEngineService:
 
         print("[WindowsEngine] Starting DirectShow shared-memory engine:")
         print("[WindowsEngine] Args:", " ".join(args))
-        print("[WindowsEngine] Working directory:", workdir)
+        print("[WindowsEngine] Working directory:", self.runtime_base_dir)
         print("[WindowsEngine] Control file:", self.control_file)
         print("[WindowsEngine] Log file:", self.log_file_path)
         print("[WindowsEngine] Broadcasting:", normalized_broadcasting)
@@ -63,7 +65,7 @@ class WindowsEngineService:
 
         self.process = subprocess.Popen(
             args,
-            cwd=str(workdir),
+            cwd=str(self.runtime_base_dir),
             stdout=self.log_file_handle,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -120,10 +122,21 @@ class WindowsEngineService:
             return None
         return self.process.poll()
 
+    def _get_runtime_base_dir(self):
+        local_app_data = os.environ.get("LOCALAPPDATA")
+
+        if local_app_data:
+            base_dir = Path(local_app_data) / "CamComposite"
+        else:
+            base_dir = Path.home() / "AppData" / "Local" / "CamComposite"
+
+        base_dir.mkdir(parents=True, exist_ok=True)
+        return base_dir
+
     def _write_control_file(self, mode, camera_ids, broadcasting=False):
         if self.control_file is None:
-            root = Path(__file__).resolve().parents[2]
-            self.runtime_dir = root / "windows_engine" / "build" / "runtime"
+            self.runtime_base_dir = self._get_runtime_base_dir()
+            self.runtime_dir = self.runtime_base_dir / "runtime"
             self.runtime_dir.mkdir(parents=True, exist_ok=True)
             self.control_file = self.runtime_dir / "control.txt"
 
