@@ -415,7 +415,94 @@ cv::Mat fitAndPad(const cv::Mat& frame, int boxW, int boxH)
     resized.copyTo(canvas(cv::Rect(x, y, newW, newH)));
     return canvas;
 }
+void drawCameraNumber(cv::Mat& frame, int number, int x, int y)
+{
+    std::string text = std::to_string(number);
 
+    int fontFace = cv::FONT_HERSHEY_DUPLEX;
+    double fontScale = 0.95;
+    int thickness = 2;
+
+    // Soft shadow for readability without looking like a badge.
+    cv::putText(
+        frame,
+        text,
+        cv::Point(x + 2, y + 2),
+        fontFace,
+        fontScale,
+        cv::Scalar(0, 0, 0),
+        thickness + 2,
+        cv::LINE_AA
+    );
+
+    // Clean white modern-looking number.
+    cv::putText(
+        frame,
+        text,
+        cv::Point(x, y),
+        fontFace,
+        fontScale,
+        cv::Scalar(255, 255, 255),
+        thickness,
+        cv::LINE_AA
+    );
+}
+
+void drawCameraNumbers(cv::Mat& frame, const std::string& mode, int count)
+{
+    const int w = frame.cols;
+    const int h = frame.rows;
+    const int pad = 34;
+
+    if (mode == "single" || count == 1)
+    {
+        drawCameraNumber(frame, 1, pad, pad + 34);
+        return;
+    }
+
+    if ((mode == "sbs" || mode == "side-by-side") && count >= 2)
+    {
+        drawCameraNumber(frame, 1, pad, pad + 34);
+        drawCameraNumber(frame, 2, w / 2 + pad, pad + 34);
+        return;
+    }
+
+    if (mode == "stacked" && count >= 2)
+    {
+        drawCameraNumber(frame, 1, pad, pad + 34);
+        drawCameraNumber(frame, 2, pad, h / 2 + pad + 34);
+        return;
+    }
+
+    if (mode == "pip" && count >= 2)
+    {
+        int pipW = OUTPUT_W / 4;
+        int pipH = OUTPUT_H / 4;
+        int margin = 40;
+        int x = OUTPUT_W - pipW - margin;
+        int y = OUTPUT_H - pipH - margin;
+
+        drawCameraNumber(frame, 1, pad, pad + 34);
+        drawCameraNumber(frame, 2, x + pad / 2, y + pad + 22);
+        return;
+    }
+
+    if (mode == "triple" && count >= 3)
+    {
+        drawCameraNumber(frame, 1, pad, pad + 34);
+        drawCameraNumber(frame, 2, pad, h / 2 + pad + 34);
+        drawCameraNumber(frame, 3, w / 2 + pad, h / 2 + pad + 34);
+        return;
+    }
+
+    if (mode == "quad" && count >= 4)
+    {
+        drawCameraNumber(frame, 1, pad, pad + 34);
+        drawCameraNumber(frame, 2, w / 2 + pad, pad + 34);
+        drawCameraNumber(frame, 3, pad, h / 2 + pad + 34);
+        drawCameraNumber(frame, 4, w / 2 + pad, h / 2 + pad + 34);
+    }
+}
 cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mode)
 {
     if (frames.empty())
@@ -425,7 +512,9 @@ cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mod
 
     if (mode == "single" || frames.size() == 1)
     {
-        return fitAndPad(frames[0], OUTPUT_W, OUTPUT_H);
+        cv::Mat output = fitAndPad(frames[0], OUTPUT_W, OUTPUT_H);
+        drawCameraNumbers(output, "single", 1);
+        return output;
     }
 
     if (mode == "pip" && frames.size() >= 2)
@@ -449,6 +538,7 @@ cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mod
         );
 
         pip.copyTo(output(cv::Rect(x, y, pipW, pipH)));
+        drawCameraNumbers(output, "pip", 2);
         return output;
     }
 
@@ -459,6 +549,7 @@ cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mod
 
         cv::Mat output;
         cv::hconcat(left, right, output);
+        drawCameraNumbers(output, "sbs", 2);
         return output;
     }
 
@@ -469,6 +560,7 @@ cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mod
 
         cv::Mat output;
         cv::vconcat(top, bottom, output);
+        drawCameraNumbers(output, "stacked", 2);
         return output;
     }
 
@@ -490,6 +582,7 @@ cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mod
 
         cv::Mat output;
         cv::vconcat(topRow, bottomRow, output);
+        drawCameraNumbers(output, "triple", 3);
         return output;
     }
 
@@ -511,10 +604,13 @@ cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mod
 
         cv::Mat output;
         cv::vconcat(topRow, bottomRow, output);
+        drawCameraNumbers(output, "quad", 4);
         return output;
     }
 
-    return fitAndPad(frames[0], OUTPUT_W, OUTPUT_H);
+    cv::Mat output = fitAndPad(frames[0], OUTPUT_W, OUTPUT_H);
+    drawCameraNumbers(output, "single", 1);
+    return output;
 }
 
 bool isNonBlack(const cv::Mat& frame)

@@ -422,10 +422,6 @@ class PreviewService:
                 image=photo,
             )
 
-            if hasattr(self.app, "draw_preview_camera_badges"):
-                self.app.draw_preview_camera_badges(x, y, img_w, img_h)
-
-
         self.preview_job = self.app.after(PREVIEW_DELAY_MS, self._update_frame)
 
     def _compose_frame(self, frames, mode):
@@ -433,28 +429,35 @@ class PreviewService:
             raise RuntimeError("No frames available for preview.")
 
         if mode == "single" or len(frames) == 1:
-            return self._fit_and_pad(frames[0], self.output_w, self.output_h)
+            output = self._fit_and_pad(frames[0], self.output_w, self.output_h)
+            return self._draw_camera_numbers(output, "single", min(len(frames), 1))
 
         if mode == "sbs" and len(frames) >= 2:
             left = self._fit_and_pad(frames[0], self.output_w // 2, self.output_h)
             right = self._fit_and_pad(frames[1], self.output_w // 2, self.output_h)
-            return cv2.hconcat([left, right])
+            output = cv2.hconcat([left, right])
+            return self._draw_camera_numbers(output, "sbs", 2)
 
         if mode == "stacked" and len(frames) >= 2:
             top = self._fit_and_pad(frames[0], self.output_w, self.output_h // 2)
             bottom = self._fit_and_pad(frames[1], self.output_w, self.output_h // 2)
-            return cv2.vconcat([top, bottom])
+            output = cv2.vconcat([top, bottom])
+            return self._draw_camera_numbers(output, "stacked", 2)
 
         if mode == "pip" and len(frames) >= 2:
-            return self._compose_pip(frames[0], frames[1])
+            output = self._compose_pip(frames[0], frames[1])
+            return self._draw_camera_numbers(output, "pip", 2)
 
         if mode == "triple" and len(frames) >= 3:
-            return self._compose_triple_grid(frames[:3])
+            output = self._compose_triple_grid(frames[:3])
+            return self._draw_camera_numbers(output, "triple", 3)
 
         if mode == "quad" and len(frames) >= 4:
-            return self._compose_quad_grid(frames[:4])
+            output = self._compose_quad_grid(frames[:4])
+            return self._draw_camera_numbers(output, "quad", 4)
 
-        return self._fit_and_pad(frames[0], self.output_w, self.output_h)
+        output = self._fit_and_pad(frames[0], self.output_w, self.output_h)
+        return self._draw_camera_numbers(output, "single", 1)
 
     def _compose_pip(self, base_frame, inset_frame):
         base = self._fit_and_pad(base_frame, self.output_w, self.output_h)
@@ -499,6 +502,86 @@ class PreviewService:
         top_row = cv2.hconcat([tl, tr])
         bottom_row = cv2.hconcat([bl, br])
         return cv2.vconcat([top_row, bottom_row])
+
+    def _draw_camera_numbers(self, frame, mode, count):
+        h, w = frame.shape[:2]
+        pad = 34
+
+        positions = []
+
+        if mode == "single" or count == 1:
+            positions = [(pad, pad + 34)]
+
+        elif mode == "sbs":
+            positions = [
+                (pad, pad + 34),
+                (w // 2 + pad, pad + 34),
+            ]
+
+        elif mode == "stacked":
+            positions = [
+                (pad, pad + 34),
+                (pad, h // 2 + pad + 34),
+            ]
+
+        elif mode == "pip":
+            inset_w = int(w * 0.28)
+            margin = 20
+            positions = [
+                (pad, pad + 34),
+                (w - inset_w - margin + pad // 2, margin + pad + 22),
+            ]
+
+        elif mode == "triple":
+            positions = [
+                (pad, pad + 34),
+                (pad, h // 2 + pad + 34),
+                (w // 2 + pad, h // 2 + pad + 34),
+            ]
+
+        elif mode == "quad":
+            positions = [
+                (pad, pad + 34),
+                (w // 2 + pad, pad + 34),
+                (pad, h // 2 + pad + 34),
+                (w // 2 + pad, h // 2 + pad + 34),
+            ]
+
+        for index, pos in enumerate(positions[:count], start=1):
+            self._draw_camera_number(frame, str(index), pos)
+
+        return frame
+
+    def _draw_camera_number(self, frame, text, position):
+        x, y = position
+
+        font = cv2.FONT_HERSHEY_DUPLEX
+        scale = 0.95
+        thickness = 2
+
+        # Soft shadow for readability without looking like a badge.
+        cv2.putText(
+            frame,
+            text,
+            (x + 2, y + 2),
+            font,
+            scale,
+            (0, 0, 0),
+            thickness + 2,
+            cv2.LINE_AA,
+        )
+
+        # Clean white modern-looking number.
+        cv2.putText(
+            frame,
+            text,
+            (x, y),
+            font,
+            scale,
+            (255, 255, 255),
+            thickness,
+            cv2.LINE_AA,
+        )
 
     def _blank_cell(self, width, height):
         return np.zeros((height, width, 3), dtype=np.uint8)
