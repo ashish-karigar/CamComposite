@@ -46,7 +46,7 @@ New-Item -ItemType Directory -Force -Path release | Out-Null
 
 Write-Host ""
 Write-Host "Building installer with Inno Setup..."
-& $ISCC /Qp /O"packaging\win\output" /F"CamComposite-win-v$VERSION" $INNO_SCRIPT
+& $ISCC /Qp /DMyAppVersion="$VERSION" /O"packaging\win\output" /F"CamComposite-win-v$VERSION" $INNO_SCRIPT
 
 $BUILT_INSTALLER = "packaging\win\output\CamComposite-win-v$VERSION.exe"
 
