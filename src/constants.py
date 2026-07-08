@@ -1,18 +1,34 @@
-# constants.py
 COLORS = {
-    "bg": "#0f1115",
-    "panel": "#171a21",
-    "panel_2": "#1d212b",
-    "text": "#f5f7fb",
-    "text1": "#000000",
-    "muted": "#a7b0c0",
-    "accent": "#7C8CFF",
-    "accent_hover": "#95a2ff",
-    "border": "#262c38",
-    "preview": "#0b0d12",
-    "chip": "#222838",
-    "disabled_tile": "#141821",
-    "error": "#ff6b6b",
+    "bg": "#0B0F17",
+    "panel": "#111827",
+    "panel_2": "#182235",
+    "panel_3": "#202B3F",
+    "preview": "#05070B",
+
+    "text": "#F8FAFC",
+    "text1": "#F8FAFC",
+    "muted": "#94A3B8",
+    "muted_2": "#64748B",
+
+    "accent": "#6D7DFF",
+    "accent_hover": "#8491FF",
+    "accent_soft": "#202A66",
+
+    "success": "#22C55E",
+    "warning": "#F59E0B",
+    "error": "#EF4444",
+
+    "border": "#263244",
+    "border_soft": "#1E293B",
+
+    "chip": "#1E293B",
+    "chip_hover": "#273449",
+    "disabled_tile": "#0F172A",
+
+    "toast_bg": "#182235",
+    "toast_error_bg": "#2A1620",
+    "toast_warning_bg": "#2A2112",
+    "toast_border": "#334155",
 }
 
 WINDOW = {

@@ -1,8 +1,12 @@
+import platform
 import tkinter as tk
 from tkinter import ttk
 
+from .modern_widgets import RoundedButton
+
 
 def build_preview_panel(app, parent):
+    hand_cursor = "pointinghand" if platform.system() == "Darwin" else "hand2"
     panel = ttk.Frame(parent, style="Panel.TFrame", padding=18)
     panel.grid(row=0, column=1, sticky="nsew")
     panel.rowconfigure(2, weight=0)
@@ -125,6 +129,34 @@ def build_preview_panel(app, parent):
 
     tiles_frame.bind("<Configure>", lambda e: (_update_scroll_region(e), update_custom_scrollbar()))
     strip_canvas.bind("<Configure>", lambda e: (_resize_inner_frame(e), update_custom_scrollbar()))
+    def _scroll_layout_strip(event):
+        if event.num == 4:
+            delta = -1
+        elif event.num == 5:
+            delta = 1
+        else:
+            delta = -1 if event.delta > 0 else 1
+
+        strip_canvas.xview_scroll(delta, "units")
+        update_custom_scrollbar()
+        return "break"
+
+    def _bind_layout_mousewheel(_event=None):
+        strip_canvas.bind_all("<MouseWheel>", _scroll_layout_strip)
+        strip_canvas.bind_all("<Shift-MouseWheel>", _scroll_layout_strip)
+        strip_canvas.bind_all("<Button-4>", _scroll_layout_strip)
+        strip_canvas.bind_all("<Button-5>", _scroll_layout_strip)
+
+    def _unbind_layout_mousewheel(_event=None):
+        strip_canvas.unbind_all("<MouseWheel>")
+        strip_canvas.unbind_all("<Shift-MouseWheel>")
+        strip_canvas.unbind_all("<Button-4>")
+        strip_canvas.unbind_all("<Button-5>")
+
+    for scroll_widget in (strip_canvas, tiles_frame):
+        scroll_widget.bind("<Enter>", _bind_layout_mousewheel)
+        scroll_widget.bind("<Leave>", _unbind_layout_mousewheel)
+        scroll_widget.configure(cursor=hand_cursor)
 
     build_layout_tile(app, tiles_frame, 0, "pip", "Picture in Picture", "One large feed with a floating inset")
     build_layout_tile(app, tiles_frame, 1, "sbs", "Side by Side", "Two camera feeds displayed next to each other")
@@ -136,7 +168,32 @@ def build_preview_panel(app, parent):
     update_custom_scrollbar()
 
     # ---------- Preview ----------
-    ttk.Label(panel, text="Preview", style="PanelTitle.TLabel").grid(row=2, column=0, sticky="w", pady=(10, 10))
+    preview_header = ttk.Frame(panel, style="Panel.TFrame")
+    preview_header.grid(row=2, column=0, sticky="ew", pady=(10, 10))
+    preview_header.columnconfigure(0, weight=1)
+
+    ttk.Label(
+        preview_header,
+        text="Preview",
+        style="PanelTitle.TLabel",
+    ).grid(row=0, column=0, sticky="w")
+
+    app.swap_button = RoundedButton(
+        preview_header,
+        text="Swap Cameras",
+        command=app.swap_cameras,
+        colors=app.colors,
+        width=132,
+        height=36,
+        radius=14,
+        bg=app.colors["chip"],
+        hover_bg=app.colors["chip_hover"],
+        active_bg=app.colors["chip"],
+        fg=app.colors["text"],
+        border=app.colors["border"],
+        font=("Helvetica", 10, "bold"),
+    )
+    app.swap_button.grid(row=0, column=1, sticky="e")
 
     preview_shell = tk.Frame(
         panel,
@@ -170,23 +227,6 @@ def build_preview_panel(app, parent):
     )
     app.preview_text_label.place(relx=0.5, rely=0.5, anchor="center")
 
-    app.swap_button = tk.Button(
-        preview_shell,
-        text="Swap Cameras",
-        bg=app.colors["chip"],
-        fg=app.colors["text1"],
-        activebackground="#2d3448",
-        activeforeground=app.colors["text1"],
-        relief="flat",
-        borderwidth=0,
-        highlightthickness=0,
-        font=("Helvetica", 10, "bold"),
-        padx=12,
-        pady=6,
-        command=app.swap_cameras,
-    )
-    app.swap_button.place(relx=1.0, x=-14, y=14, anchor="ne")
-
     return panel
 
 
@@ -198,7 +238,7 @@ def build_layout_tile(app, parent, column, mode_key, title, subtitle):
         bg=app.colors["panel_2"],
         highlightthickness=1,
         highlightbackground=app.colors["border"],
-        cursor="hand2",
+        cursor="pointinghand" if platform.system() == "Darwin" else "hand2",
     )
     outer.grid(row=0, column=column, padx=(0 if column == 0 else 16, 0), sticky="n")
     outer.pack_propagate(False)

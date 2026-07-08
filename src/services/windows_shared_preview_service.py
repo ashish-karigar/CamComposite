@@ -263,6 +263,8 @@ class WindowsSharedPreviewService:
             anchor="nw",
             image=photo,
         )
+        if hasattr(self.app, "draw_preview_camera_badges"):
+            self.app.draw_preview_camera_badges(x, y, img_w, img_h)
 
         self.preview_job = self.app.after(PREVIEW_DELAY_MS, self._update_frame)
 
