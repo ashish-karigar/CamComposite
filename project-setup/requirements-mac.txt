@@ -4,3 +4,6 @@ ndi-python
 numpy
 obsws-python
 pillow
+sounddevice
+soundfile
+imageio-ffmpeg

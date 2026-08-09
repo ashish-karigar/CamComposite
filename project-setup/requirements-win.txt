@@ -3,3 +3,6 @@ numpy
 pyvirtualcam
 pillow
 pyinstaller
+sounddevice
+soundfile
+imageio-ffmpeg

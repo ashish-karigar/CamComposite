@@ -30,6 +30,7 @@ class PreviewService:
         self.preview_image_ref = None
         self.canvas_image_id = None
         self.frame_forwarder = None
+        self.frame_sink = None
         self.render_local = True
         self.video_profile = get_video_profile()
         self.output_w = self.video_profile["width"]
@@ -46,6 +47,23 @@ class PreviewService:
 
     def set_frame_forwarder(self, forwarder):
         self.frame_forwarder = forwarder
+
+    def set_frame_sink(self, sink):
+        self.frame_sink = sink
+
+    def set_render_local(self, enabled):
+        self.render_local = bool(enabled)
+
+        if self.render_local:
+            if hasattr(self.app, "preview_text_label"):
+                self.app.preview_text_label.place_forget()
+        else:
+            if hasattr(self.app, "preview_canvas"):
+                self.app.preview_canvas.delete("all")
+            if hasattr(self.app, "preview_text_var"):
+                self.app.preview_text_var.set("Local preview disabled")
+            if hasattr(self.app, "preview_text_label"):
+                self.app.preview_text_label.place(relx=0.5, rely=0.5, anchor="center")
 
     def _show_status_warning(self, message):
         if hasattr(self.app, "set_footer_message"):
@@ -397,6 +415,12 @@ class PreviewService:
                 self.frame_forwarder.send_frame(composed)
             except Exception as e:
                 print(f"Frame forward warning: {e}")
+
+        if self.frame_sink is not None:
+            try:
+                self.frame_sink.submit(composed)
+            except Exception as e:
+                print(f"Frame sink warning: {e}")
 
         if self.render_local:
             canvas_w = max(self.app.preview_canvas.winfo_width(), 640)
