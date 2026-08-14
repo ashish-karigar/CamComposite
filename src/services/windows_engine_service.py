@@ -14,9 +14,23 @@ class WindowsEngineService:
         self.log_file_handle = None
         self.log_file_path = None
 
+    @staticmethod
+    def _normalize_camera_ids(camera_ids):
+        normalized_ids = []
+        seen_camera_ids = set()
+
+        for camera_id in camera_ids:
+            normalized_id = str(camera_id)
+            if normalized_id in seen_camera_ids:
+                continue
+            seen_camera_ids.add(normalized_id)
+            normalized_ids.append(normalized_id)
+
+        return normalized_ids
+
     def start(self, mode, camera_ids, *, force_restart=False, broadcasting=False):
         normalized_mode = str(mode)
-        normalized_camera_ids = [str(cam_id) for cam_id in camera_ids]
+        normalized_camera_ids = self._normalize_camera_ids(camera_ids)
         normalized_broadcasting = bool(broadcasting)
 
         exe_path = self._find_engine_exe()

@@ -396,6 +396,12 @@ cv::Mat fitAndPad(const cv::Mat& frame, int boxW, int boxH)
         return blank(boxW, boxH);
     }
 
+    // Preserve ownership isolation while avoiding a no-op full-frame resize.
+    if (frame.cols == boxW && frame.rows == boxH)
+    {
+        return frame.clone();
+    }
+
     double scale = std::min(
         static_cast<double>(boxW) / frame.cols,
         static_cast<double>(boxH) / frame.rows
