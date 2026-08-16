@@ -21,3 +21,7 @@ packaging/mac/CamComposite.pkg
 
 # Optional: if you do NOT want local release files tracked
 # release/
+# Xcode user-specific files
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
