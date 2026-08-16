@@ -1,7 +1,13 @@
 import os
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-hiddenimports = collect_submodules("src") + ["obsws_python", "NDIlib"]
+hiddenimports = collect_submodules("src") + [
+    "obsws_python",
+    "NDIlib",
+    "sounddevice",
+    "soundfile",
+    "imageio_ffmpeg",
+]
 APP_VERSION = os.environ.get("CAMCOMPOSITE_VERSION", "1.0.0")
 
 a = Analysis(
@@ -10,7 +16,7 @@ a = Analysis(
     binaries=[
     ("/opt/anaconda3/envs/CamComposite/lib/libpython3.10.dylib", "Frameworks"),
     ],
-    datas=[
+    datas=collect_data_files("imageio_ffmpeg") + [
         ("../assets", "assets"),
         ("../src/helpers", "src/helpers"),
         ("../src/prototypes", "src/prototypes"),
@@ -69,5 +75,6 @@ app = BUNDLE(
         "CFBundleShortVersionString": APP_VERSION,
         "CFBundleVersion": APP_VERSION,
         "NSCameraUsageDescription": "CamComposite needs camera access to detect and preview connected cameras.",
+        "NSMicrophoneUsageDescription": "CamComposite needs microphone access to include audio in recordings.",
     },
 )

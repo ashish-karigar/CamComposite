@@ -90,6 +90,32 @@ def build_controls_panel(app, parent):
     )
     stop_btn.grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=6)
 
+    app.preview_toggle = ttk.Checkbutton(
+        panel,
+        text="Preview when app is active",
+        variable=app.preview_enabled_var,
+        command=app.toggle_preview,
+        style="Panel.TCheckbutton",
+    )
+    app.preview_toggle.pack(anchor="w", pady=(4, 2))
+    app.preview_toggle.state(["disabled"])
+
+    app.record_button = RoundedButton(
+        panel,
+        text="Start Recording",
+        command=app.toggle_recording,
+        colors=app.colors,
+        width=276,
+        height=42,
+        radius=14,
+        bg=app.colors["chip"],
+        hover_bg=app.colors["chip_hover"],
+        active_bg=app.colors["chip"],
+        fg=app.colors["text"],
+        border=app.colors["border"],
+    )
+    app.record_button.pack(fill="x", pady=(4, 0))
+
     health = ttk.Frame(panel, style="Inner.TFrame", padding=14)
     health.pack(fill="x", pady=(14, 0))
 

@@ -88,8 +88,28 @@ def configure_styles(root, colors):
         focuscolor=colors["panel"],
     )
 
+    style.configure(
+        "Panel.TCheckbutton",
+        background=colors["panel"],
+        foreground=colors["text"],
+        font=("Helvetica", 10),
+        focuscolor=colors["panel"],
+    )
+
     style.map(
         "TCheckbutton",
+        background=[
+            ("active", colors["panel"]),
+            ("pressed", colors["panel"]),
+        ],
+        foreground=[
+            ("active", colors["text"]),
+            ("pressed", colors["text"]),
+        ],
+    )
+
+    style.map(
+        "Panel.TCheckbutton",
         background=[
             ("active", colors["panel"]),
             ("pressed", colors["panel"]),

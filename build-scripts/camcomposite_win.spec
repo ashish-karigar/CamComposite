@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files
 
 SPEC_DIR = Path(SPEC).resolve().parent
 PROJECT_ROOT = SPEC_DIR.parent
@@ -12,7 +13,7 @@ a = Analysis(
         str(PROJECT_ROOT / "src"),
     ],
     binaries=[],
-    datas=[
+    datas=collect_data_files("imageio_ffmpeg") + [
         (str(PROJECT_ROOT / "assets"), "assets"),
         (str(PROJECT_ROOT / "packaging" / "win"), "packaging/win"),
     ],
@@ -21,6 +22,9 @@ a = Analysis(
         "cv2",
         "PIL",
         "numpy",
+        "sounddevice",
+        "soundfile",
+        "imageio_ffmpeg",
     ],
     hookspath=[],
     hooksconfig={},

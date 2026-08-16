@@ -64,16 +64,29 @@ class WindowsSharedPreviewService:
         self.h_map = None
         self.view_ptr = None
         self.last_good_bgr = None
+        self.frame_sink = None
+        self.render_local = True
         self.video_profile = get_video_profile()
         self.output_w = self.video_profile["width"]
         self.output_h = self.video_profile["height"]
 
-    def start(self):
+    def set_frame_sink(self, sink):
+        self.frame_sink = sink
+
+    def set_render_local(self, enabled):
+        self.render_local = bool(enabled)
+
+    def start(self, render_local=True):
         self._cancel_preview_loop()
+        self.render_local = bool(render_local)
 
         if not self._open_shared_memory():
-            self._show_waiting_message()
-            self.preview_job = self.app.after(250, self.start)
+            if self.render_local:
+                self._show_waiting_message()
+            self.preview_job = self.app.after(
+                250,
+                lambda: self.start(render_local=self.render_local),
+            )
             return
 
         self._update_frame()
@@ -236,6 +249,16 @@ class WindowsSharedPreviewService:
         else:
             self._show_waiting_message()
             self.preview_job = self.app.after(250, self._update_frame)
+            return
+
+        if self.frame_sink is not None:
+            try:
+                self.frame_sink.submit(frame)
+            except Exception as exc:
+                print(f"Windows frame sink warning: {exc}")
+
+        if not self.render_local:
+            self.preview_job = self.app.after(PREVIEW_DELAY_MS, self._update_frame)
             return
 
         if hasattr(self.app, "preview_text_label"):

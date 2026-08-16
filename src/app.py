@@ -1,8 +1,9 @@
 # app.py
 import platform
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import filedialog, messagebox, ttk
 import threading
+from datetime import datetime
 from pathlib import Path
 from ui.app_icon import set_window_icon
 
@@ -17,9 +18,10 @@ from ui import (
     build_footer,
 )
 
-from services import detect_cameras_for_current_os, PreviewService
+from services import detect_cameras_for_current_os, PreviewService, RecordingService
 from ui.modern_widgets import RoundedButton, RoundedToast
 
+PREVIEW_FOCUS_OUT_DELAY_MS = 3000
 
 class CamCompositeApp(tk.Tk):
     def __init__(self):
@@ -45,6 +47,8 @@ class CamCompositeApp(tk.Tk):
         self.obs_lock = threading.Lock()
         self.toast_frame = None
         self._toast_after_id = None
+        self._focus_sync_after_id = None
+        self._app_is_active = True
 
         if self.current_os == "Darwin":
             from src.utils.obs_mac_controller import MacOBSController
@@ -58,9 +62,9 @@ class CamCompositeApp(tk.Tk):
         self.mode_var = tk.StringVar(value="single")
         self.swapped_var = tk.BooleanVar(value=False)
 
-        # Kept internally for pipeline compatibility.
-        # These are no longer shown as checkboxes in the UI.
-        self.preview_var = tk.BooleanVar(value=True)
+        self.preview_enabled_var = tk.BooleanVar(value=True)
+        # Keep the old name for pipeline compatibility with existing code.
+        self.preview_var = self.preview_enabled_var
         self.auto_hide_obs_var = tk.BooleanVar(value=True)
 
         self.status_var = tk.StringVar(value="Ready")
@@ -74,8 +78,16 @@ class CamCompositeApp(tk.Tk):
         self.after(200, self.detect_cameras)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind_all("<FocusIn>", self._on_app_focus_in, add="+")
+        self.bind_all("<FocusOut>", self._on_app_focus_out, add="+")
 
         self.preview_service = PreviewService(self)
+        self.recording_service = RecordingService(
+            self.preview_service.output_w,
+            self.preview_service.output_h,
+            self.preview_service.output_fps,
+        )
+        self.preview_service.set_frame_sink(self.recording_service)
         self.windows_shared_preview_service = None
         self.frame_forwarder = None
         self.windows_engine_service = None
@@ -92,6 +104,7 @@ class CamCompositeApp(tk.Tk):
 
             self.windows_engine_service = WindowsEngineService()
             self.windows_shared_preview_service = WindowsSharedPreviewService(self)
+            self.windows_shared_preview_service.set_frame_sink(self.recording_service)
 
             # Windows:
             # video_engine.exe -> shared memory -> app preview before Start
@@ -452,6 +465,13 @@ class CamCompositeApp(tk.Tk):
     # -------------------------------------------------------------------------
 
     def _on_close(self):
+        self._cancel_focus_sync()
+
+        try:
+            self.stop_recording(show_message=False)
+        except Exception as e:
+            print(f"Recording close warning: {e}")
+
         try:
             if self.obs_controller is not None:
                 self.obs_controller.stop()
@@ -758,6 +778,249 @@ class CamCompositeApp(tk.Tk):
             )
 
     # -------------------------------------------------------------------------
+
+    def _show_preview_disabled_message(self):
+        self.preview_text_var.set("Preview is off")
+
+        if hasattr(self, "preview_canvas"):
+            self.preview_canvas.delete("all")
+
+        if hasattr(self, "preview_text_label"):
+            self.preview_text_label.configure(
+                font=("Helvetica", 14, "normal"),
+                fg=self.colors["muted"],
+            )
+            self.preview_text_label.place(relx=0.5, rely=0.5, anchor="center")
+
+    def _cancel_focus_sync(self):
+        if self._focus_sync_after_id is not None:
+            try:
+                self.after_cancel(self._focus_sync_after_id)
+            except Exception:
+                pass
+            self._focus_sync_after_id = None
+
+    def _on_app_focus_in(self, event=None):
+        try:
+            if event is not None and event.widget.winfo_toplevel() is not self:
+                return
+        except Exception:
+            return
+
+        self._cancel_focus_sync()
+        self._set_app_active(True)
+
+    def _on_app_focus_out(self, event=None):
+        try:
+            if event is not None and event.widget.winfo_toplevel() is not self:
+                return
+        except Exception:
+            return
+
+        self._cancel_focus_sync()
+        self._focus_sync_after_id = self.after(
+            PREVIEW_FOCUS_OUT_DELAY_MS,
+            self._sync_app_focus,
+        )
+
+    def _sync_app_focus(self):
+        self._focus_sync_after_id = None
+
+        focused_widget = self.focus_get()
+        is_active = False
+
+        if focused_widget is not None:
+            try:
+                is_active = focused_widget.winfo_toplevel() is self
+            except Exception:
+                is_active = False
+
+        self._set_app_active(is_active)
+
+    def _set_app_active(self, active):
+        active = bool(active)
+        if active == self._app_is_active:
+            return
+
+        self._app_is_active = active
+        self.preview_enabled_var.set(active)
+        self.toggle_preview()
+
+    def toggle_preview(self):
+        enabled = self.preview_enabled_var.get()
+
+        if self.current_os == "Windows":
+            if self.pipeline_running:
+                if enabled or self.recording_service.is_recording():
+                    if self.windows_shared_preview_service is not None:
+                        self.windows_shared_preview_service.set_render_local(enabled)
+                        if self.windows_shared_preview_service.preview_job is None:
+                            self.windows_shared_preview_service.start(
+                                render_local=enabled,
+                            )
+                elif self.windows_shared_preview_service is not None:
+                    self.windows_shared_preview_service.stop(clear_canvas=True)
+
+                if enabled:
+                    self._reset_preview_message_style()
+                else:
+                    self._show_preview_disabled_message()
+            elif enabled:
+                self.refresh_preview()
+            else:
+                if self.windows_shared_preview_service is not None:
+                    self.windows_shared_preview_service.stop(clear_canvas=True)
+                self._show_preview_disabled_message()
+            return
+
+        if self.current_os == "Darwin":
+            if self.pipeline_running:
+                self.preview_service.set_render_local(enabled)
+                if enabled:
+                    self._reset_preview_message_style()
+                else:
+                    self._show_preview_disabled_message()
+            elif enabled:
+                self.refresh_preview()
+            else:
+                self.preview_service.set_render_local(False)
+                self._show_preview_disabled_message()
+            return
+
+        if enabled:
+            self.refresh_preview()
+        else:
+            self.preview_service.set_render_local(False)
+            self._show_preview_disabled_message()
+
+    def _set_record_button_state(self, recording=False, pending=False):
+        if hasattr(self, "record_button"):
+            if recording:
+                label = "Stop Recording"
+            elif pending:
+                label = "Save Recording"
+            else:
+                label = "Start Recording"
+            self.record_button.set_text(label)
+
+    def toggle_recording(self):
+        if self.recording_service.is_recording():
+            self.stop_recording()
+            return
+
+        if self.recording_service.has_pending_recording():
+            self._save_pending_recording()
+            return
+
+        if not self.pipeline_running:
+            self.set_footer_message(
+                "Start the broadcast pipeline before recording.",
+                severity="warning",
+            )
+            return
+
+        try:
+            self.recording_service.start()
+
+            if self.current_os == "Windows" and self.windows_shared_preview_service is not None:
+                self.windows_shared_preview_service.set_render_local(
+                    self.preview_enabled_var.get()
+                )
+                if self.windows_shared_preview_service.preview_job is None:
+                    self.windows_shared_preview_service.start(
+                        render_local=self.preview_enabled_var.get(),
+                    )
+
+            self._set_record_button_state(True)
+            self.set_footer_message(
+                "Recording started. Choose a save location when you stop.",
+                severity="info",
+            )
+        except Exception as exc:
+            if self.recording_service.is_recording():
+                self.recording_service.stop()
+            self.set_footer_message(f"Could not start recording: {exc}", severity="error")
+
+    def _save_pending_recording(self, show_message=True):
+        if not self.recording_service.has_pending_recording():
+            self._set_record_button_state(False)
+            return
+
+        default_dir = Path.home() / "Movies"
+        if not default_dir.exists():
+            default_dir = Path.home()
+
+        output_path = filedialog.asksaveasfilename(
+            title="Save CamComposite Recording",
+            initialdir=str(default_dir),
+            initialfile=f"CamComposite_{datetime.now():%Y%m%d_%H%M%S}.mp4",
+            defaultextension=".mp4",
+            filetypes=[("MP4 video", "*.mp4"), ("All files", "*.*")],
+        )
+
+        if not output_path:
+            self._set_record_button_state(pending=True)
+            if show_message:
+                self.set_footer_message(
+                    "Recording is ready to save. Choose Save Recording when ready.",
+                    severity="warning",
+                )
+            return
+
+        try:
+            saved_path = self.recording_service.finalize(output_path)
+        except Exception as exc:
+            self._set_record_button_state(pending=True)
+            self.set_footer_message(f"Could not save recording: {exc}", severity="error")
+            return
+
+        error = self.recording_service.error
+        audio_warning = self.recording_service.audio_warning
+        self._set_record_button_state(False)
+
+        if error is not None:
+            self.set_footer_message(f"Recording stopped with an error: {error}", severity="error")
+        elif show_message and audio_warning:
+            self.set_footer_message(
+                f"Recording saved without audio: {audio_warning}",
+                severity="warning",
+            )
+        elif show_message:
+            self.set_footer_message(
+                f"Recording saved: {saved_path.name}",
+                severity="info",
+            )
+
+    def stop_recording(self, show_message=True):
+        if self.recording_service.is_recording():
+            self.recording_service.stop()
+            self._set_record_button_state(pending=True)
+
+        if not show_message:
+            self.recording_service.discard()
+            self._set_record_button_state(False)
+            return
+
+        self._save_pending_recording(show_message=True)
+
+        if self.pipeline_running:
+            self.after(100, self._restore_preview_after_recording_stop)
+
+        if (
+            self.current_os == "Windows"
+            and not self.preview_enabled_var.get()
+            and self.windows_shared_preview_service is not None
+        ):
+            self.windows_shared_preview_service.stop(clear_canvas=True)
+
+    def _restore_preview_after_recording_stop(self):
+        if not self.pipeline_running:
+            return
+
+        self.preview_enabled_var.set(self._app_is_active)
+        self.toggle_preview()
+
+    # -------------------------------------------------------------------------
     # Windows broadcast update
     # -------------------------------------------------------------------------
 
@@ -784,10 +1047,20 @@ class CamCompositeApp(tk.Tk):
             )
 
             if self.windows_shared_preview_service is not None:
-                self.windows_shared_preview_service.stop(clear_canvas=True)
+                if self.preview_enabled_var.get() or self.recording_service.is_recording():
+                    self.windows_shared_preview_service.set_render_local(
+                        self.preview_enabled_var.get()
+                    )
+                    if self.windows_shared_preview_service.preview_job is None:
+                        self.windows_shared_preview_service.start(
+                            render_local=self.preview_enabled_var.get(),
+                        )
+                else:
+                    self.windows_shared_preview_service.stop(clear_canvas=True)
 
             self.preview_service.stop()
-            self._show_broadcasting_message()
+            if not self.preview_enabled_var.get():
+                self._show_broadcasting_message()
 
             self.status_var.set(
                 f"Running: {', '.join([self._camera_name_from_id(cid) for cid in self.selected_cameras])}, "
@@ -895,10 +1168,14 @@ class CamCompositeApp(tk.Tk):
                 )
 
                 if self.windows_shared_preview_service is not None:
-                    self.windows_shared_preview_service.stop(clear_canvas=True)
+                    if self.preview_enabled_var.get():
+                        self.windows_shared_preview_service.start(render_local=True)
+                    else:
+                        self.windows_shared_preview_service.stop(clear_canvas=True)
 
                 self.preview_service.stop()
-                self._show_broadcasting_message()
+                if not self.preview_enabled_var.get():
+                    self._show_broadcasting_message()
 
             else:
                 if self.frame_forwarder is not None:
@@ -906,19 +1183,19 @@ class CamCompositeApp(tk.Tk):
 
                 if self.current_os == "Darwin":
                     # macOS optimization:
-                    # Keep camera loop warm and forwarding to NDI/OBS,
-                    # but hide local preview while broadcasting.
+                    # Keep camera loop warm and forwarding to NDI/OBS.
                     self.preview_service.start(
                         self.selected_cameras,
                         self.mode_var.get(),
-                        render_local=False,
+                        render_local=self.preview_enabled_var.get(),
                     )
-                    self._show_broadcasting_message()
+                    if not self.preview_enabled_var.get():
+                        self._show_broadcasting_message()
                 else:
                     self.preview_service.start(
                         self.selected_cameras,
                         self.mode_var.get(),
-                        render_local=self.preview_var.get(),
+                        render_local=self.preview_enabled_var.get(),
                     )
 
             if self.obs_controller is not None:
@@ -965,17 +1242,37 @@ class CamCompositeApp(tk.Tk):
             self.set_footer_message(str(e), severity="error")
             self.status_var.set("Stopped")
             self.preview_text_var.set("Preview unavailable")
+            self.preview_enabled_var.set(self._app_is_active)
+            self.refresh_preview()
 
     def refresh_preview(self):
         if not self.selected_cameras:
             self.preview_text_var.set("No cameras selected")
             return
 
+        if not self.pipeline_running and not self.preview_enabled_var.get():
+            self.preview_service.set_render_local(False)
+            if self.windows_shared_preview_service is not None:
+                self.windows_shared_preview_service.stop(clear_canvas=True)
+            self._show_preview_disabled_message()
+            return
+
         if self.current_os == "Windows":
             if self.pipeline_running:
-                if self.windows_shared_preview_service is not None:
+                if self.preview_enabled_var.get() or self.recording_service.is_recording():
+                    if self.windows_shared_preview_service is not None:
+                        self.windows_shared_preview_service.set_render_local(
+                            self.preview_enabled_var.get()
+                        )
+                        if self.windows_shared_preview_service.preview_job is None:
+                            self.windows_shared_preview_service.start(
+                                render_local=self.preview_enabled_var.get(),
+                            )
+                elif self.windows_shared_preview_service is not None:
                     self.windows_shared_preview_service.stop(clear_canvas=True)
-                self._show_broadcasting_message()
+
+                if not self.preview_enabled_var.get():
+                    self._show_broadcasting_message()
                 return
 
             try:
@@ -1003,7 +1300,9 @@ class CamCompositeApp(tk.Tk):
 
                 self.after(700, self._check_windows_preview_engine_started)
 
-                self.windows_shared_preview_service.start()
+                self.windows_shared_preview_service.start(
+                    render_local=self.preview_enabled_var.get(),
+                )
 
                 self.clear_footer_message()
 
@@ -1022,15 +1321,7 @@ class CamCompositeApp(tk.Tk):
         try:
             self._reset_preview_message_style()
 
-            render_local = True
-
-            if self.current_os == "Darwin" and self.pipeline_running:
-                # macOS optimization:
-                # While broadcasting through OBS/NDI, keep the camera loop warm
-                # but do not bring local preview back on layout/camera changes.
-                render_local = False
-            else:
-                render_local = self.preview_var.get() if self.pipeline_running else True
+            render_local = self.preview_enabled_var.get()
 
             self.preview_service.start(
                 self.selected_cameras,
@@ -1038,7 +1329,7 @@ class CamCompositeApp(tk.Tk):
                 render_local=render_local,
             )
 
-            if self.current_os == "Darwin" and self.pipeline_running:
+            if self.current_os == "Darwin" and self.pipeline_running and not render_local:
                 self._show_broadcasting_message()
 
             self.clear_footer_message()
@@ -1062,8 +1353,8 @@ class CamCompositeApp(tk.Tk):
                     print(f"OBS stop warning: {e}")
 
         if self.current_os == "Windows":
-            # Do NOT stop video_engine.exe.
-            # Keep cameras warm for preview, but flip broadcasting=0.
+            # Flip broadcasting off first. Keep the engine warm only when
+            # local preview remains enabled.
             if self.windows_engine_service is not None:
                 self.windows_engine_service.start(
                     self.mode_var.get(),
@@ -1075,7 +1366,13 @@ class CamCompositeApp(tk.Tk):
             self.preview_service.stop()
 
             if self.windows_shared_preview_service is not None:
-                self.windows_shared_preview_service.start()
+                if self.preview_enabled_var.get():
+                    self.windows_shared_preview_service.start(render_local=True)
+                else:
+                    self.windows_shared_preview_service.stop(clear_canvas=True)
+
+            if not self.preview_enabled_var.get() and self.windows_engine_service is not None:
+                self.windows_engine_service.stop()
 
         else:
             if self.frame_forwarder is not None:
@@ -1084,7 +1381,7 @@ class CamCompositeApp(tk.Tk):
             # macOS optimization:
             # Do NOT release cameras on Stop.
             # Keep preview warm like Windows; only stop NDI/OBS forwarding.
-            if self.current_os == "Darwin" and self.selected_cameras:
+            if self.current_os == "Darwin" and self.selected_cameras and self.preview_enabled_var.get():
                 self.preview_service.start(
                     self.selected_cameras,
                     self.mode_var.get(),
@@ -1094,8 +1391,15 @@ class CamCompositeApp(tk.Tk):
                 self.preview_service.stop()
 
         self.pipeline_running = False
+        self.preview_enabled_var.set(self._app_is_active)
+        self.stop_recording()
         self.status_var.set("Stopped")
-        self.preview_text_var.set(f"{self._layout_label(self.mode_var.get())} preview will appear here")
+        if self.preview_enabled_var.get():
+            self.preview_text_var.set(
+                f"{self._layout_label(self.mode_var.get())} preview will appear here"
+            )
+        else:
+            self._show_preview_disabled_message()
         self.clear_footer_message()
 
     def _show_stopped_message(self):

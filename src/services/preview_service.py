@@ -18,6 +18,21 @@ except ImportError:
     from src.constants import get_video_profile
 
 PREVIEW_DELAY_MS = 30
+IDLE_CAPTURE_POLL_DELAY_MS = 100
+
+
+def _ordered_unique_camera_ids(camera_ids):
+    unique_ids = []
+    seen = set()
+
+    for camera_id in camera_ids:
+        normalized_id = str(camera_id)
+        if normalized_id in seen:
+            continue
+        seen.add(normalized_id)
+        unique_ids.append(normalized_id)
+
+    return unique_ids
 
 
 class PreviewService:
@@ -30,6 +45,7 @@ class PreviewService:
         self.preview_image_ref = None
         self.canvas_image_id = None
         self.frame_forwarder = None
+        self.frame_sink = None
         self.render_local = True
         self.video_profile = get_video_profile()
         self.output_w = self.video_profile["width"]
@@ -46,6 +62,38 @@ class PreviewService:
 
     def set_frame_forwarder(self, forwarder):
         self.frame_forwarder = forwarder
+
+    def set_frame_sink(self, sink):
+        self.frame_sink = sink
+
+    def _has_active_output(self):
+        """Return whether a downstream consumer currently needs full frames."""
+        if self.frame_forwarder is not None:
+            # Existing forwarders expose `running`; unknown forwarder types are
+            # treated as active for compatibility.
+            if getattr(self.frame_forwarder, "running", True):
+                return True
+
+        if self.frame_sink is not None:
+            is_recording = getattr(self.frame_sink, "is_recording", None)
+            if is_recording is None or is_recording():
+                return True
+
+        return False
+
+    def set_render_local(self, enabled):
+        self.render_local = bool(enabled)
+
+        if self.render_local:
+            if hasattr(self.app, "preview_text_label"):
+                self.app.preview_text_label.place_forget()
+        else:
+            if hasattr(self.app, "preview_canvas"):
+                self.app.preview_canvas.delete("all")
+            if hasattr(self.app, "preview_text_var"):
+                self.app.preview_text_var.set("Local preview disabled")
+            if hasattr(self.app, "preview_text_label"):
+                self.app.preview_text_label.place(relx=0.5, rely=0.5, anchor="center")
 
     def _show_status_warning(self, message):
         if hasattr(self.app, "set_footer_message"):
@@ -72,7 +120,7 @@ class PreviewService:
         }
 
         required = required_counts.get(mode, 1)
-        camera_ids_to_open = selected_camera_ids[:required]
+        camera_ids_to_open = _ordered_unique_camera_ids(selected_camera_ids)[:required]
 
         self.active_camera_ids = [str(cam_id) for cam_id in camera_ids_to_open]
         self._sync_open_captures(self.active_camera_ids)
@@ -107,7 +155,7 @@ class PreviewService:
         }
 
         required = required_counts.get(mode, 1)
-        new_active_ids = [str(cam_id) for cam_id in selected_camera_ids[:required]]
+        new_active_ids = _ordered_unique_camera_ids(selected_camera_ids)[:required]
 
         with self.capture_lock:
             open_ids = set(self.captures.keys())
@@ -339,6 +387,16 @@ class PreviewService:
         if not self.active_camera_ids:
             return
 
+        # Keep capture threads warm for instant focus-in recovery, but avoid
+        # pulling and composing 1080p frames while the local preview is hidden
+        # and neither broadcasting nor recording is active.
+        if not self.render_local and not self._has_active_output():
+            self.preview_job = self.app.after(
+                IDLE_CAPTURE_POLL_DELAY_MS,
+                self._update_frame,
+            )
+            return
+
         mode = self.app.mode_var.get()
         frames = []
 
@@ -397,6 +455,12 @@ class PreviewService:
                 self.frame_forwarder.send_frame(composed)
             except Exception as e:
                 print(f"Frame forward warning: {e}")
+
+        if self.frame_sink is not None:
+            try:
+                self.frame_sink.submit(composed)
+            except Exception as e:
+                print(f"Frame sink warning: {e}")
 
         if self.render_local:
             canvas_w = max(self.app.preview_canvas.winfo_width(), 640)
@@ -587,6 +651,11 @@ class PreviewService:
         return np.zeros((height, width, 3), dtype=np.uint8)
 
     def _fit_and_pad(self, frame, box_w, box_h):
+        # Keep the output independent from the capture buffer, but avoid a
+        # full-frame resize when the camera already delivered the target size.
+        if frame.shape[1] == box_w and frame.shape[0] == box_h:
+            return frame.copy()
+
         fitted = self._fit_inside_box(frame, box_w, box_h)
         h, w = fitted.shape[:2]
 
