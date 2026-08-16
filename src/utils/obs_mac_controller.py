@@ -5,6 +5,18 @@ import time
 from obsws_python import ReqClient
 
 
+OBS_VIRTUAL_CAMERA_EXTENSION_ID = (
+    "com.obsproject.obs-studio.mac-camera-extension"
+)
+CAMERA_EXTENSIONS_SETTINGS_URL = (
+    "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+)
+
+
+class OBSVirtualCameraApprovalRequired(RuntimeError):
+    pass
+
+
 class MacOBSController:
     def __init__(
         self,
@@ -24,6 +36,7 @@ class MacOBSController:
         self.client = None
         self.is_running = False
         self._obs_was_launched_by_us = False
+        self._restart_obs_before_next_start = False
 
     def start(self):
         if self.is_running:
@@ -42,6 +55,51 @@ class MacOBSController:
 
         self.is_running = True
         print("OBS pipeline started")
+
+    def ensure_virtual_camera_extension_approved(self, timeout=300.0):
+        """Trigger and wait for the one-time macOS camera-extension approval."""
+        if self._virtual_camera_extension_active():
+            print("[OBS] Camera extension is active.")
+            return False
+
+        self.obs_proc = self._launch_obs()
+        self._obs_was_launched_by_us = True
+        print("[OBS] Launching OBS to request Camera Extension approval...")
+        time.sleep(3)
+        self.client = self._connect_obs()
+
+        try:
+            self._start_virtual_camera()
+        except OBSVirtualCameraApprovalRequired:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if self._virtual_camera_extension_active():
+                    print("[OBS] Camera extension approval detected.")
+                    self._restart_obs_after_extension_approval()
+                    return True
+                time.sleep(1)
+
+            raise RuntimeError(
+                "OBS Camera Extension approval timed out. Enable it in System "
+                "Settings, then launch CamComposite again."
+            )
+
+        # Starting succeeded even though systemextensionsctl did not report the
+        # extension yet. Stop the temporary camera and OBS before app startup.
+        self._restart_obs_after_extension_approval()
+        return True
+
+    def _restart_obs_after_extension_approval(self):
+        try:
+            if self.client is not None:
+                self._stop_virtual_camera(self.client)
+        finally:
+            self.client = None
+            self._quit_obs_app()
+            time.sleep(2)
+            self.obs_proc = None
+            self._obs_was_launched_by_us = False
+            self._restart_obs_before_next_start = False
 
     def hide_obs(self):
         self._hide_obs_app()
@@ -77,7 +135,47 @@ class MacOBSController:
         print("OBS pipeline stopped")
 
     def _launch_obs(self):
+        if self._restart_obs_before_next_start:
+            self._quit_obs_app()
+            time.sleep(2)
+            self._restart_obs_before_next_start = False
+
         return subprocess.Popen(["open", "-g", self.obs_app_path])
+
+    def _virtual_camera_extension_active(self):
+        result = subprocess.run(
+            ["systemextensionsctl", "list"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return False
+
+        for line in result.stdout.splitlines():
+            if OBS_VIRTUAL_CAMERA_EXTENSION_ID not in line:
+                continue
+
+            normalized = line.lower()
+            return "activated enabled" in normalized
+
+        return False
+
+    def _request_virtual_camera_approval(self):
+        self._restart_obs_before_next_start = True
+
+        # OBS owns the extension request. Keep its system prompt visible, then
+        # take the user directly to the page where macOS requires their approval.
+        subprocess.run(
+            ["osascript", "-e", 'tell application "OBS" to activate'],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["open", CAMERA_EXTENSIONS_SETTINGS_URL],
+            check=False,
+        )
 
     def _hide_obs_app(self):
         script = """
@@ -146,6 +244,8 @@ class MacOBSController:
         raise RuntimeError("OBS opened, but never became ready")
 
     def _start_virtual_camera(self, retries=10, delay=1.0):
+        extension_was_active = self._virtual_camera_extension_active()
+
         for attempt in range(retries):
             try:
                 if self.client is None:
@@ -155,6 +255,13 @@ class MacOBSController:
                 print("Virtual camera started")
                 return
             except Exception as e:
+                if not extension_was_active:
+                    self._request_virtual_camera_approval()
+                    raise OBSVirtualCameraApprovalRequired(
+                        "Enable the OBS Camera Extension in System Settings, "
+                        "then return to CamComposite and press Start again."
+                    ) from e
+
                 print(f"Could not start virtual camera yet... {attempt + 1}/{retries} -> {e}")
                 time.sleep(delay)
 

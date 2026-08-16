@@ -19,7 +19,9 @@ if platform.system() == "Darwin":
         install_pkg,
         copy_obs_scene_config,
         copy_obs_profile_config,
+        ensure_obs_websocket_config,
     )
+    from utils.obs_mac_controller import MacOBSController
 elif platform.system() == "Windows":
     from helpers.win_first_run_check import (
         ensure_windows_requirements,
@@ -59,8 +61,24 @@ def run_startup_setup(root, splash):
 
             copy_obs_scene_config()
             copy_obs_profile_config()
+            ensure_obs_websocket_config()
 
-            splash.append_log("OBS scene config copied/patched.")
+            splash.append_log("OBS scene, profile, and WebSocket config are ready.")
+
+            splash.set_status(
+                "Checking OBS Camera Extension...",
+                "macOS may ask you to approve the OBS Camera Extension.",
+            )
+            splash.append_log("Checking OBS Camera Extension approval...")
+
+            setup_obs_controller = MacOBSController()
+            approval_requested = (
+                setup_obs_controller.ensure_virtual_camera_extension_approved()
+            )
+            if approval_requested:
+                splash.append_log("OBS Camera Extension approved and OBS restarted.")
+            else:
+                splash.append_log("OBS Camera Extension is ready.")
 
         elif platform.system() == "Windows":
             ensure_windows_requirements(splash)

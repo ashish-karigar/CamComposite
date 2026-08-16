@@ -1090,13 +1090,27 @@ class CamCompositeApp(tk.Tk):
 
             except Exception as e:
                 message = str(e)
-                self.after(
-                    0,
-                    lambda msg=message: self.set_footer_message(
-                        f"OBS start warning: {msg}",
+
+                def report_obs_start_error(msg=message):
+                    try:
+                        self.preview_service.stop()
+                    except Exception:
+                        pass
+                    try:
+                        if self.frame_forwarder is not None:
+                            self.frame_forwarder.stop()
+                    except Exception:
+                        pass
+
+                    self.pipeline_running = False
+                    self.status_var.set("OBS setup required")
+                    self.set_footer_message(
+                        f"OBS setup: {msg}",
                         severity="warning",
                     )
-                )
+                    self.after(100, self.refresh_preview)
+
+                self.after(0, report_obs_start_error)
 
         threading.Thread(
             target=worker,

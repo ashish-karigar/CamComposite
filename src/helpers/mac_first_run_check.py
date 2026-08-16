@@ -1,6 +1,14 @@
 from pathlib import Path
+import json
+import os
+import shlex
 import shutil
 import subprocess
+import time
+
+
+OBS_WEBSOCKET_PORT = 4455
+OBS_WEBSOCKET_PASSWORD = "mylens123"
 
 
 def _resource_path(filename: str):
@@ -75,6 +83,110 @@ def obs_scene_config_present():
         / "Library/Application Support/obs-studio/basic/scenes/CamComposite.json"
     ).exists()
 
+
+def _obs_websocket_config_path():
+    return (
+        Path.home()
+        / "Library/Application Support/obs-studio/plugin_config/obs-websocket/config.json"
+    )
+
+
+def _obs_is_running():
+    result = subprocess.run(
+        ["osascript", "-e", 'application "OBS" is running'],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and result.stdout.strip().lower() == "true"
+
+
+def _stop_obs_for_configuration(timeout=10.0):
+    if not _obs_is_running():
+        return False
+
+    print("[OBS] Stopping OBS to apply WebSocket configuration...")
+    subprocess.run(
+        ["osascript", "-e", 'tell application "OBS" to quit'],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _obs_is_running():
+            return True
+        time.sleep(0.2)
+
+    raise RuntimeError(
+        "OBS is running and could not be stopped. Quit OBS and launch CamComposite again."
+    )
+
+
+def _read_json_object(path):
+    if not path.exists():
+        return {}
+
+    try:
+        with path.open("r", encoding="utf-8") as config_file:
+            value = json.load(config_file)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not read OBS WebSocket config: {path}") from exc
+
+    if not isinstance(value, dict):
+        raise RuntimeError(f"OBS WebSocket config is not a JSON object: {path}")
+
+    return value
+
+
+def ensure_obs_websocket_config():
+    """Configure the OBS WebSocket server expected by CamComposite.
+
+    OBS writes its configuration while quitting, so stop it only when a change is
+    required, then re-read the file before applying the CamComposite settings.
+    Returns True when the configuration changed.
+    """
+    config_path = _obs_websocket_config_path()
+    required_settings = {
+        "server_enabled": True,
+        "server_port": OBS_WEBSOCKET_PORT,
+        "auth_required": True,
+        "server_password": OBS_WEBSOCKET_PASSWORD,
+        "first_load": False,
+    }
+
+    current_config = _read_json_object(config_path)
+    if all(current_config.get(key) == value for key, value in required_settings.items()):
+        print("[OBS] WebSocket configuration is ready.")
+        return False
+
+    _stop_obs_for_configuration()
+
+    # OBS may rewrite this file as it exits, so use the latest version and preserve
+    # all settings CamComposite does not own.
+    current_config = _read_json_object(config_path)
+    current_config.update(required_settings)
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = config_path.with_name(f".{config_path.name}.tmp")
+
+    try:
+        with temporary_path.open("w", encoding="utf-8") as config_file:
+            json.dump(current_config, config_file, indent=2)
+            config_file.write("\n")
+            config_file.flush()
+            os.fsync(config_file.fileno())
+        temporary_path.replace(config_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+    print(
+        f"[OBS] WebSocket enabled on port {OBS_WEBSOCKET_PORT} "
+        "with CamComposite authentication."
+    )
+    return True
+
 def install_obs():
     dmg = _resource_path("obs-studio-32.0.4-macos-apple.dmg")
     if not dmg.exists():
@@ -102,7 +214,39 @@ def install_obs():
         if not app_path.exists():
             raise RuntimeError(f"OBS.app not found in mounted dmg: {mount_point}")
 
-        subprocess.run(["cp", "-R", str(app_path), "/Applications/"], check=True)
+        destination = Path("/Applications/OBS.app")
+        try:
+            subprocess.run(
+                ["ditto", str(app_path), str(destination)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError:
+            install_command = (
+                f"ditto {shlex.quote(str(app_path))} "
+                f"{shlex.quote(str(destination))}"
+            )
+            apple_command = install_command.replace("\\", "\\\\").replace('"', '\\"')
+            prompt = (
+                "CamComposite needs administrator permission to install OBS "
+                "in the Applications folder."
+            )
+            apple_prompt = prompt.replace("\\", "\\\\").replace('"', '\\"')
+
+            subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    f'do shell script "{apple_command}" with administrator '
+                    f'privileges with prompt "{apple_prompt}"',
+                ],
+                check=True,
+                text=True,
+            )
+
+        if not destination.exists():
+            raise RuntimeError("OBS installation completed, but OBS.app was not found.")
     finally:
         subprocess.run(["hdiutil", "detach", mount_point], check=False)
 # def install_obs():
