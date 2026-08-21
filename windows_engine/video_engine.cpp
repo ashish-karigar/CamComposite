@@ -30,6 +30,7 @@
 static constexpr int OUTPUT_W = 1920;
 static constexpr int OUTPUT_H = 1080;
 static constexpr int FPS = 30;
+static constexpr auto FRAME_INTERVAL = std::chrono::nanoseconds(1000000000LL / FPS);
 
 static const std::string CONTROL_FILE_PATH = "runtime/control.txt";
 
@@ -172,32 +173,38 @@ public:
 
         BYTE* dst = shared->buffers[writeBufferIndex];
 
-        for (int y = 0; y < CAMCOMP_HEIGHT; y++)
+        // This is the hottest path in the engine (over two million pixels per
+        // frame). Split it across OpenCV's worker pool instead of converting
+        // the entire 1080p image on the compositor thread.
+        cv::parallel_for_(cv::Range(0, CAMCOMP_HEIGHT), [&](const cv::Range& range)
         {
-            const BYTE* row = frame.ptr<BYTE>(y);
-
-            for (int x = 0; x < CAMCOMP_WIDTH; x += 2)
+            for (int y = range.start; y < range.end; y++)
             {
-                const BYTE* p0 = row + x * 3;
-                const BYTE* p1 = row + (x + 1) * 3;
+                const BYTE* row = frame.ptr<BYTE>(y);
+                BYTE* dstRow = dst + (y * CAMCOMP_WIDTH * 2);
 
-                BYTE y0, u0, v0;
-                BYTE y1, u1, v1;
+                for (int x = 0; x < CAMCOMP_WIDTH; x += 2)
+                {
+                    const BYTE* p0 = row + x * 3;
+                    const BYTE* p1 = p0 + 3;
 
-                bgrToYuv(p0[0], p0[1], p0[2], y0, u0, v0);
-                bgrToYuv(p1[0], p1[1], p1[2], y1, u1, v1);
+                    BYTE y0, u0, v0;
+                    BYTE y1, u1, v1;
 
-                BYTE u = static_cast<BYTE>((static_cast<int>(u0) + static_cast<int>(u1)) / 2);
-                BYTE v = static_cast<BYTE>((static_cast<int>(v0) + static_cast<int>(v1)) / 2);
+                    bgrToYuv(p0[0], p0[1], p0[2], y0, u0, v0);
+                    bgrToYuv(p1[0], p1[1], p1[2], y1, u1, v1);
 
-                int offset = (y * CAMCOMP_WIDTH + x) * 2;
+                    BYTE u = static_cast<BYTE>((static_cast<int>(u0) + static_cast<int>(u1)) / 2);
+                    BYTE v = static_cast<BYTE>((static_cast<int>(v0) + static_cast<int>(v1)) / 2);
+                    int offset = x * 2;
 
-                dst[offset + 0] = y0;
-                dst[offset + 1] = u;
-                dst[offset + 2] = y1;
-                dst[offset + 3] = v;
+                    dstRow[offset + 0] = y0;
+                    dstRow[offset + 1] = u;
+                    dstRow[offset + 2] = y1;
+                    dstRow[offset + 3] = v;
+                }
             }
-        }
+        });
 
         MemoryBarrier();
 
@@ -253,7 +260,10 @@ public:
             return false;
         }
 
-        latestFrame.copyTo(out);
+        // cv::Mat is reference-counted. Taking a snapshot of the header keeps
+        // the underlying camera frame alive without copying 6 MB while holding
+        // the capture mutex. The producer replaces (rather than mutates) it.
+        out = latestFrame;
         return true;
     }
 
@@ -326,6 +336,10 @@ private:
         cap.set(cv::CAP_PROP_FRAME_WIDTH, OUTPUT_W);
         cap.set(cv::CAP_PROP_FRAME_HEIGHT, OUTPUT_H);
         cap.set(cv::CAP_PROP_FPS, FPS);
+        // Supported backends keep only the newest frame. DirectShow may ignore
+        // this property, but setting it is harmless and reduces latency where
+        // the device/backend honors it.
+        cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
 
         std::cout << "Actual camera " << cameraIndex << ": "
                   << cap.get(cv::CAP_PROP_FRAME_WIDTH) << "x"
@@ -354,7 +368,10 @@ private:
 
                 {
                     std::lock_guard<std::mutex> lock(frameMutex);
-                    latestFrame = frame.clone();
+                    // Transfer shared ownership of this capture buffer. The next
+                    // cap.read() uses a new local Mat, so readers get an immutable
+                    // snapshot without a full-frame clone.
+                    latestFrame = frame;
                 }
 
                 ready = true;
@@ -619,17 +636,6 @@ cv::Mat composeFrames(const std::vector<cv::Mat>& frames, const std::string& mod
     return output;
 }
 
-bool isNonBlack(const cv::Mat& frame)
-{
-    if (frame.empty())
-        return false;
-
-    cv::Scalar meanValue = cv::mean(frame);
-    double brightness = meanValue[0] + meanValue[1] + meanValue[2];
-
-    return brightness > 15.0;
-}
-
 std::string trim(const std::string& value)
 {
     size_t start = value.find_first_not_of(" \t\r\n");
@@ -799,6 +805,7 @@ int main(int argc, char** argv)
     std::cout << "Running continuous compositor. Press Ctrl+C to stop.\n";
 
     int frameCounter = 0;
+    auto nextFrameDeadline = std::chrono::steady_clock::now();
 
     while (true)
     {
@@ -846,8 +853,7 @@ int main(int argc, char** argv)
 
             if (
                 it != readers.end() &&
-                it->second->readLatest(frame) &&
-                isNonBlack(frame)
+                it->second->readLatest(frame)
             )
             {
                 frames.push_back(frame);
@@ -876,7 +882,20 @@ int main(int argc, char** argv)
                       << "\n";
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000 / FPS));
+        // Pace against an absolute clock. Sleeping for 33 ms after the work
+        // made the real period "processing time + 33 ms" and guaranteed less
+        // than 30 FPS. Also reset after a missed deadline so we do not burst.
+        nextFrameDeadline += FRAME_INTERVAL;
+        auto now = std::chrono::steady_clock::now();
+
+        if (nextFrameDeadline > now)
+        {
+            std::this_thread::sleep_until(nextFrameDeadline);
+        }
+        else
+        {
+            nextFrameDeadline = now;
+        }
     }
 
     for (auto& pair : readers)
