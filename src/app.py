@@ -491,6 +491,7 @@ class CamCompositeApp(tk.Tk):
 
         try:
             if self.windows_engine_service is not None:
+                self.windows_engine_service.stop_profiler()
                 self.windows_engine_service.stop()
             if self.frame_forwarder is not None:
                 self.frame_forwarder.stop()
@@ -1432,6 +1433,19 @@ class CamCompositeApp(tk.Tk):
             cameras = detect_cameras_for_current_os()
             self.detected_cameras = cameras
             self._populate_camera_selectors()
+
+            if self.current_os == "Windows" and self.windows_engine_service is not None:
+                selected_ids = {str(camera_id) for camera_id in self.selected_cameras}
+                background_ids = [
+                    str(camera["id"])
+                    for camera in cameras
+                    if str(camera["id"]) not in selected_ids
+                ]
+                if background_ids:
+                    self.after(
+                        500,
+                        lambda ids=background_ids: self.windows_engine_service.profile_cameras(ids),
+                    )
 
             if not cameras:
                 self.setup_var.set("No cameras detected")

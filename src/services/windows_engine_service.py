@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 
@@ -15,6 +16,9 @@ class WindowsEngineService:
         self.control_file = None
         self.log_file_handle = None
         self.log_file_path = None
+        self.profile_process = None
+        self.profile_camera_ids = set()
+        self.profile_log_handle = None
 
     @staticmethod
     def _normalize_camera_ids(camera_ids):
@@ -34,6 +38,9 @@ class WindowsEngineService:
         normalized_mode = str(mode)
         normalized_camera_ids = self._normalize_camera_ids(camera_ids)
         normalized_broadcasting = bool(broadcasting)
+
+        if self.profile_camera_ids.intersection(normalized_camera_ids):
+            self.stop_profiler()
 
         exe_path = self._find_engine_exe()
         if exe_path is None:
@@ -89,6 +96,61 @@ class WindowsEngineService:
         self.current_mode = normalized_mode
         self.current_camera_ids = normalized_camera_ids
         self.current_broadcasting = normalized_broadcasting
+
+    def profile_cameras(self, camera_ids):
+        normalized_ids = self._normalize_camera_ids(camera_ids)
+        if not normalized_ids:
+            return
+        if self.profile_process is not None and self.profile_process.poll() is None:
+            return
+
+        exe_path = self._find_engine_exe()
+        if exe_path is None:
+            return
+
+        runtime_base = self._get_runtime_base_dir()
+        runtime_dir = runtime_base / "runtime"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        profile_log_path = runtime_dir / "camera_profiler.log"
+        self.profile_log_handle = open(profile_log_path, "w", encoding="utf-8", buffering=1)
+        self.profile_camera_ids = set(normalized_ids)
+
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
+        self.profile_process = subprocess.Popen(
+            [str(exe_path), "--profile", *normalized_ids],
+            cwd=str(runtime_base),
+            stdout=self.profile_log_handle,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+        process = self.profile_process
+
+        def finish_profile():
+            process.wait()
+            if self.profile_process is process:
+                self.profile_process = None
+                self.profile_camera_ids.clear()
+                if self.profile_log_handle is not None:
+                    self.profile_log_handle.close()
+                    self.profile_log_handle = None
+
+        threading.Thread(target=finish_profile, daemon=True).start()
+
+    def stop_profiler(self):
+        process = self.profile_process
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        self.profile_process = None
+        self.profile_camera_ids.clear()
+        if self.profile_log_handle is not None:
+            self.profile_log_handle.close()
+            self.profile_log_handle = None
 
     def set_broadcasting(self, enabled):
         if not self.current_camera_ids:

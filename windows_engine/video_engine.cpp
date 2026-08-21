@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -46,24 +48,6 @@ class SharedFrameWriter
 private:
     HANDLE hMap = NULL;
     CamCompositeSharedFrame* shared = nullptr;
-
-    static BYTE clampByte(int value)
-    {
-        if (value < 0) return 0;
-        if (value > 255) return 255;
-        return static_cast<BYTE>(value);
-    }
-
-    static void bgrToYuv(BYTE b, BYTE g, BYTE r, BYTE& y, BYTE& u, BYTE& v)
-    {
-        int yy = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-        int uu = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-        int vv = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-
-        y = clampByte(yy);
-        u = clampByte(uu);
-        v = clampByte(vv);
-    }
 
 public:
     bool open()
@@ -173,38 +157,17 @@ public:
 
         BYTE* dst = shared->buffers[writeBufferIndex];
 
-        // This is the hottest path in the engine (over two million pixels per
-        // frame). Split it across OpenCV's worker pool instead of converting
-        // the entire 1080p image on the compositor thread.
-        cv::parallel_for_(cv::Range(0, CAMCOMP_HEIGHT), [&](const cv::Range& range)
-        {
-            for (int y = range.start; y < range.end; y++)
-            {
-                const BYTE* row = frame.ptr<BYTE>(y);
-                BYTE* dstRow = dst + (y * CAMCOMP_WIDTH * 2);
-
-                for (int x = 0; x < CAMCOMP_WIDTH; x += 2)
-                {
-                    const BYTE* p0 = row + x * 3;
-                    const BYTE* p1 = p0 + 3;
-
-                    BYTE y0, u0, v0;
-                    BYTE y1, u1, v1;
-
-                    bgrToYuv(p0[0], p0[1], p0[2], y0, u0, v0);
-                    bgrToYuv(p1[0], p1[1], p1[2], y1, u1, v1);
-
-                    BYTE u = static_cast<BYTE>((static_cast<int>(u0) + static_cast<int>(u1)) / 2);
-                    BYTE v = static_cast<BYTE>((static_cast<int>(v0) + static_cast<int>(v1)) / 2);
-                    int offset = x * 2;
-
-                    dstRow[offset + 0] = y0;
-                    dstRow[offset + 1] = u;
-                    dstRow[offset + 2] = y1;
-                    dstRow[offset + 3] = v;
-                }
-            }
-        });
+        // Wrap the inactive shared-memory buffer so OpenCV writes YUY2 into it
+        // directly. OpenCV dispatches this conversion to its optimized SIMD
+        // implementation, avoiding both the custom per-pixel loop and a copy.
+        cv::Mat yuy2(
+            CAMCOMP_HEIGHT,
+            CAMCOMP_WIDTH,
+            CV_8UC2,
+            dst,
+            CAMCOMP_WIDTH * CAMCOMP_BYTES_PER_PIXEL
+        );
+        cv::cvtColor(frame, yuy2, cv::COLOR_BGR2YUV_YUY2);
 
         MemoryBarrier();
 
@@ -251,7 +214,7 @@ public:
         worker = std::thread(&CameraReader::loop, this);
     }
 
-    bool readLatest(cv::Mat& out)
+    bool readLatest(cv::Mat& out, std::uint64_t& sequence)
     {
         std::lock_guard<std::mutex> lock(frameMutex);
 
@@ -264,6 +227,7 @@ public:
         // the underlying camera frame alive without copying 6 MB while holding
         // the capture mutex. The producer replaces (rather than mutates) it.
         out = latestFrame;
+        sequence = frameSequence;
         return true;
     }
 
@@ -275,6 +239,19 @@ public:
     bool hasFailed() const
     {
         return failed.load();
+    }
+
+    bool profileAndCache()
+    {
+        running = true;
+        bool result = openCamera();
+        running = false;
+        if (cap.isOpened())
+        {
+            cap.release();
+        }
+        ready = false;
+        return result;
     }
 
     void stop()
@@ -309,7 +286,139 @@ private:
     std::thread worker;
     std::mutex frameMutex;
     cv::Mat latestFrame;
+    std::uint64_t frameSequence = 0;
     int failedReads = 0;
+    bool ignoreCachedProfileOnce = false;
+
+    struct CaptureProfile
+    {
+        int width;
+        int height;
+        int fps;
+        int fourcc;
+        const char* name;
+    };
+
+    bool configureProfile(const CaptureProfile& profile)
+    {
+        if (cap.isOpened())
+        {
+            cap.release();
+        }
+
+        cap.open(cameraIndex, cv::CAP_DSHOW);
+        if (!cap.isOpened())
+        {
+            return false;
+        }
+
+        cap.set(cv::CAP_PROP_FOURCC, profile.fourcc);
+        cap.set(cv::CAP_PROP_FRAME_WIDTH, profile.width);
+        cap.set(cv::CAP_PROP_FRAME_HEIGHT, profile.height);
+        cap.set(cv::CAP_PROP_FPS, profile.fps);
+        cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
+        return true;
+    }
+
+    double measureProfile(
+        const CaptureProfile& profile,
+        bool& deliveredRequestedResolution,
+        int warmupFrames,
+        int measuredFrames
+    )
+    {
+        deliveredRequestedResolution = false;
+        if (!configureProfile(profile))
+        {
+            return 0.0;
+        }
+
+        cv::Mat frame;
+
+        for (int i = 0; i < warmupFrames && running; i++)
+        {
+            if (!cap.read(frame) || frame.empty())
+            {
+                return 0.0;
+            }
+        }
+
+        int successfulFrames = 0;
+        auto started = std::chrono::steady_clock::now();
+
+        for (int i = 0; i < measuredFrames && running; i++)
+        {
+            if (cap.read(frame) && !frame.empty())
+            {
+                successfulFrames++;
+            }
+        }
+
+        double elapsedSeconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - started
+        ).count();
+
+        if (!frame.empty())
+        {
+            deliveredRequestedResolution =
+                frame.cols == profile.width && frame.rows == profile.height;
+        }
+
+        if (successfulFrames == 0 || elapsedSeconds <= 0.0)
+        {
+            return 0.0;
+        }
+
+        return static_cast<double>(successfulFrames) / elapsedSeconds;
+    }
+
+    std::filesystem::path profileCachePath() const
+    {
+        return std::filesystem::path("runtime") /
+            ("camera_profile_" + std::to_string(cameraIndex) + ".txt");
+    }
+
+    int loadCachedProfileIndex(const CaptureProfile* profiles, int profileCount) const
+    {
+        std::ifstream file(profileCachePath());
+        int width = 0;
+        int height = 0;
+        int fps = 0;
+        int fourcc = 0;
+        if (!(file >> width >> height >> fps >> fourcc))
+        {
+            return -1;
+        }
+
+        for (int i = 0; i < profileCount; i++)
+        {
+            if (
+                profiles[i].width == width &&
+                profiles[i].height == height &&
+                profiles[i].fps == fps &&
+                profiles[i].fourcc == fourcc
+            )
+            {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    void saveCachedProfile(const CaptureProfile& profile) const
+    {
+        std::error_code error;
+        std::filesystem::create_directories("runtime", error);
+        std::ofstream file(profileCachePath(), std::ios::trunc);
+        if (file)
+        {
+            file << profile.width << " "
+                 << profile.height << " "
+                 << profile.fps << " "
+                 << profile.fourcc << "\n";
+            file.flush();
+        }
+    }
 
     bool openCamera()
     {
@@ -323,30 +432,83 @@ private:
 
         std::cout << "Opening camera index " << cameraIndex << " in background...\n";
 
-        cap.open(cameraIndex, cv::CAP_DSHOW);
+        const int mjpg = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
+        const int yuy2 = cv::VideoWriter::fourcc('Y', 'U', 'Y', '2');
+        const CaptureProfile profiles[] = {
+            {1920, 1080, 30, mjpg, "1080p30 MJPG"},
+            {1280, 720, 30, mjpg, "720p30 MJPG"},
+            {1920, 1080, 30, yuy2, "1080p30 YUY2"},
+            {1280, 720, 30, yuy2, "720p30 YUY2"},
+        };
 
-        if (!cap.isOpened())
+        constexpr double MIN_ACCEPTABLE_FPS = 24.0;
+        const int profileCount = static_cast<int>(sizeof(profiles) / sizeof(profiles[0]));
+        int bestProfileIndex = -1;
+        double bestMeasuredFps = 0.0;
+        int cachedProfileIndex = ignoreCachedProfileOnce
+            ? -1
+            : loadCachedProfileIndex(profiles, profileCount);
+        ignoreCachedProfileOnce = false;
+
+        if (cachedProfileIndex >= 0)
         {
-            std::cerr << "Failed to open camera index " << cameraIndex << "\n";
-            failed = true;
-            return false;
+            if (configureProfile(profiles[cachedProfileIndex]))
+            {
+                std::cout << "Camera " << cameraIndex << " reused cached profile "
+                          << profiles[cachedProfileIndex].name << " without reprofiling\n";
+                return true;
+            }
+
+            std::cout << "Camera " << cameraIndex
+                      << " cached profile could not open; probing alternatives.\n";
         }
 
-        cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
-        cap.set(cv::CAP_PROP_FRAME_WIDTH, OUTPUT_W);
-        cap.set(cv::CAP_PROP_FRAME_HEIGHT, OUTPUT_H);
-        cap.set(cv::CAP_PROP_FPS, FPS);
-        // Supported backends keep only the newest frame. DirectShow may ignore
-        // this property, but setting it is harmless and reduces latency where
-        // the device/backend honors it.
-        cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
+        for (int i = 0; i < profileCount; i++)
+        {
+            if (i == cachedProfileIndex)
+            {
+                continue;
+            }
 
-        std::cout << "Actual camera " << cameraIndex << ": "
-                  << cap.get(cv::CAP_PROP_FRAME_WIDTH) << "x"
-                  << cap.get(cv::CAP_PROP_FRAME_HEIGHT) << "@"
-                  << cap.get(cv::CAP_PROP_FPS) << "\n";
+            bool correctResolution = false;
+            double measuredFps = measureProfile(profiles[i], correctResolution, 1, 8);
 
-        return true;
+            std::cout << "Camera " << cameraIndex << " profile "
+                      << profiles[i].name << ": measured "
+                      << measuredFps << " FPS, delivered "
+                      << cap.get(cv::CAP_PROP_FRAME_WIDTH) << "x"
+                      << cap.get(cv::CAP_PROP_FRAME_HEIGHT)
+                      << (correctResolution ? "" : " (resolution mismatch)")
+                      << "\n";
+
+            if (correctResolution && measuredFps > bestMeasuredFps)
+            {
+                bestProfileIndex = i;
+                bestMeasuredFps = measuredFps;
+            }
+
+            if (correctResolution && measuredFps >= MIN_ACCEPTABLE_FPS)
+            {
+                saveCachedProfile(profiles[i]);
+                std::cout << "Camera " << cameraIndex << " selected "
+                          << profiles[i].name << "\n";
+                return true;
+            }
+        }
+
+        if (bestProfileIndex >= 0 && configureProfile(profiles[bestProfileIndex]))
+        {
+            saveCachedProfile(profiles[bestProfileIndex]);
+            std::cout << "Camera " << cameraIndex << " selected best available profile "
+                      << profiles[bestProfileIndex].name << " at measured "
+                      << bestMeasuredFps << " FPS\n";
+            return true;
+        }
+
+        std::cerr << "Failed to negotiate a usable format for camera index "
+                  << cameraIndex << "\n";
+        failed = true;
+        return false;
     }
 
     void loop()
@@ -372,6 +534,7 @@ private:
                     // cap.read() uses a new local Mat, so readers get an immutable
                     // snapshot without a full-frame clone.
                     latestFrame = frame;
+                    frameSequence++;
                 }
 
                 ready = true;
@@ -384,6 +547,7 @@ private:
                 if (failedReads >= 60)
                 {
                     std::cerr << "Camera " << cameraIndex << " stalled. Reopening in background...\n";
+                    ignoreCachedProfileOnce = true;
                     openCamera();
                     failedReads = 0;
                 }
@@ -778,6 +942,22 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    if (std::string(argv[1]) == "--profile")
+    {
+        bool allSucceeded = true;
+        for (int i = 2; i < argc; i++)
+        {
+            int cameraIndex = std::stoi(argv[i]);
+            std::cout << "Background profiling camera index " << cameraIndex << "\n";
+            CameraReader reader(cameraIndex);
+            if (!reader.profileAndCache())
+            {
+                allSucceeded = false;
+            }
+        }
+        return allSucceeded ? 0 : 2;
+    }
+
     EngineControl activeControl;
     activeControl.mode = argv[1];
 
@@ -804,12 +984,16 @@ int main(int argc, char** argv)
     std::cout << "Initial broadcasting: " << (activeControl.broadcasting ? "ON" : "OFF") << "\n";
     std::cout << "Running continuous compositor. Press Ctrl+C to stop.\n";
 
-    int frameCounter = 0;
+    std::uint64_t compositorTick = 0;
+    std::uint64_t writtenFrameCount = 0;
+    std::uint64_t droppedFrameSlots = 0;
+    std::map<int, std::uint64_t> lastCameraSequences;
+    bool forceCompose = true;
     auto nextFrameDeadline = std::chrono::steady_clock::now();
 
     while (true)
     {
-        if (frameCounter % 5 == 0)
+        if (compositorTick % 5 == 0)
         {
             EngineControl requestedControl = readControlFile(activeControl);
 
@@ -839,25 +1023,35 @@ int main(int argc, char** argv)
 
                 activeControl = requestedControl;
                 sharedWriter.setBroadcasting(activeControl.broadcasting);
+                forceCompose = forceCompose || modeChanged || camerasChanged;
             }
         }
 
         std::vector<cv::Mat> frames;
         int validFrameCount = 0;
+        bool hasNewCameraFrame = false;
 
         for (int index : activeControl.cameraIndexes)
         {
             cv::Mat frame;
+            std::uint64_t sequence = 0;
 
             auto it = readers.find(index);
 
             if (
                 it != readers.end() &&
-                it->second->readLatest(frame)
+                it->second->readLatest(frame, sequence)
             )
             {
                 frames.push_back(frame);
                 validFrameCount++;
+
+                auto previous = lastCameraSequences.find(index);
+                if (previous == lastCameraSequences.end() || previous->second != sequence)
+                {
+                    hasNewCameraFrame = true;
+                    lastCameraSequences[index] = sequence;
+                }
             }
             else
             {
@@ -865,26 +1059,32 @@ int main(int argc, char** argv)
             }
         }
 
-        cv::Mat finalOutput = composeFrames(frames, activeControl.mode);
-        sharedWriter.writeBgrFrame(finalOutput);
-
-        frameCounter++;
-
-        if (frameCounter % 30 == 0)
+        if (forceCompose || hasNewCameraFrame)
         {
-            std::cout << "Wrote shared frame. Cameras ready: "
-                      << validFrameCount << "/"
-                      << activeControl.cameraIndexes.size()
-                      << ". Mode: "
-                      << activeControl.mode
-                      << ". Broadcasting: "
-                      << (activeControl.broadcasting ? "ON" : "OFF")
-                      << "\n";
+            cv::Mat finalOutput = composeFrames(frames, activeControl.mode);
+            sharedWriter.writeBgrFrame(finalOutput);
+            forceCompose = false;
+            writtenFrameCount++;
+
+            if (writtenFrameCount % 30 == 0)
+            {
+                std::cout << "Wrote shared frame. Cameras ready: "
+                          << validFrameCount << "/"
+                          << activeControl.cameraIndexes.size()
+                          << ". Mode: "
+                          << activeControl.mode
+                          << ". Broadcasting: "
+                          << (activeControl.broadcasting ? "ON" : "OFF")
+                          << ". Dropped pacing slots: "
+                          << droppedFrameSlots
+                          << "\n";
+            }
         }
 
-        // Pace against an absolute clock. Sleeping for 33 ms after the work
-        // made the real period "processing time + 33 ms" and guaranteed less
-        // than 30 FPS. Also reset after a missed deadline so we do not burst.
+        compositorTick++;
+
+        // Keep an absolute 30 FPS clock. When processing overruns, advance past
+        // every missed slot instead of immediately running catch-up iterations.
         nextFrameDeadline += FRAME_INTERVAL;
         auto now = std::chrono::steady_clock::now();
 
@@ -894,7 +1094,11 @@ int main(int argc, char** argv)
         }
         else
         {
-            nextFrameDeadline = now;
+            const auto missedSlots =
+                static_cast<std::uint64_t>((now - nextFrameDeadline) / FRAME_INTERVAL) + 1;
+            droppedFrameSlots += missedSlots;
+            nextFrameDeadline += FRAME_INTERVAL * missedSlots;
+            std::this_thread::sleep_until(nextFrameDeadline);
         }
     }
 
