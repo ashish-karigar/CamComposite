@@ -1,0 +1,30 @@
+name: Faultline Demo CI
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Test username normalization
+        shell: python
+        run: |
+          import unittest
+
+          def normalize_username(value):
+              # Intentional bug for the Faultline demo.
+              return value
+
+          class UsernameTests(unittest.TestCase):
+              def test_username_is_lowercase(self):
+                  self.assertEqual(
+                      normalize_username("Alice"),
+                      "alice",
+                  )
+
+          unittest.main(verbosity=2)
